@@ -4,6 +4,8 @@ structure for API requests and database storage.
 """
 
 from datetime import datetime, timezone
+from enum import Enum
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,8 +26,17 @@ class RectangleBounds(BaseModel):
     northEast: LatLng = Field(..., description="North-east corner of the rectangle")
 
 
-MonitoringAreaType = Literal["forest", "water"]
-MonitoringAreaStatus = Literal["active", "pending", "paused", "error", "deleted"]
+class MonitoringAreaType(str, Enum):
+    FOREST = "forest"
+    WATER = "water"
+
+
+class MonitoringAreaStatus(str, Enum):
+    ACTIVE = "active"
+    PENDING = "pending"
+    PAUSED = "paused"
+    ERROR = "error"
+    DELETED = "deleted"
 
 
 class MonitoringAreaCreate(BaseModel):
@@ -46,8 +57,8 @@ class MonitoringAreaInDB(MonitoringAreaCreate):
     """
     user_id: str = Field(..., description="User ID associated with the monitoring area")
     area_id: str = Field(None, description="Unique identifier for the monitoring area")
-    polygon: List[List[float]] = Field(
-        ..., min_length=4, max_length=4, description="GeoJSON-like polygon coordinates (4 points)"
+    polygon: List[LatLng] = Field(
+        ..., min_length=4, max_length=4, description="Polygon vertices stored as ordered latitude/longitude pairs"
     )
     status: MonitoringAreaStatus = Field(
         "pending", description="Current status of the monitoring area"

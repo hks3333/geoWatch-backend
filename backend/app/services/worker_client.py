@@ -4,16 +4,16 @@ It handles making asynchronous HTTP calls to trigger satellite image analysis.
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 
 import httpx
+
+from app.models.monitoring_area import LatLng
+from app.utils.geometry import polygon_to_worker_coordinates
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-from typing import Optional
 
 class WorkerClient:
     def __init__(self, worker_url: str):
@@ -35,14 +35,14 @@ class WorkerClient:
             self._client = None
 
     async def trigger_analysis(
-        self, area_id: str, polygon: List[List[float]], area_type: str, is_baseline: bool
+        self, area_id: str, polygon: List[LatLng], area_type: str, is_baseline: bool
     ) -> bool:
         """
         Triggers an analysis job on the Analysis Worker service.
 
         Args:
             area_id (str): The ID of the monitoring area.
-            polygon (List[List[float]]): The polygon coordinates of the area.
+            polygon (List[LatLng]): The polygon vertices of the area.
             area_type (str): The type of monitoring (e.g., "forest", "water").
             is_baseline (bool): True if this is the initial baseline analysis.
 
@@ -52,7 +52,7 @@ class WorkerClient:
         endpoint = f"{self.worker_url}/analyze"
         payload = {
             "area_id": area_id,
-            "polygon": polygon,
+            "polygon": polygon_to_worker_coordinates(polygon),
             "type": area_type,
             "is_baseline": is_baseline,
         }
