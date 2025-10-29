@@ -3,7 +3,7 @@ This module defines the Pydantic models for Analysis Results, including their
 structure for API responses and database storage.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Literal
 
 from pydantic import BaseModel, Field
@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field
 
 class AnalysisStatistics(BaseModel):
     """
-Pydantic model for the statistical data of an analysis result.
-"""
+    Pydantic model for the statistical data of an analysis result.
+    """
     loss_hectares: float = Field(..., ge=0, description="Hectares of loss detected")
     gain_hectares: float = Field(..., ge=0, description="Hectares of gain detected")
     change_percentage: float = Field(
@@ -22,8 +22,8 @@ Pydantic model for the statistical data of an analysis result.
 
 class AnalysisImages(BaseModel):
     """
-Pydantic model for Cloud Storage URLs of images related to an analysis.
-"""
+    Pydantic model for Cloud Storage URLs of images related to an analysis.
+    """
     baseline: str = Field(..., description="Cloud Storage URL for the baseline image")
     current: str = Field(..., description="Cloud Storage URL for the current image")
     change_mask: str = Field(..., description="Cloud Storage URL for the change mask image")
@@ -34,12 +34,13 @@ AnalysisProcessingStatus = Literal["in_progress", "completed", "failed"]
 
 class AnalysisResultInDB(BaseModel):
     """
-Pydantic model for an analysis result as stored in the database.
-"""
+    Pydantic model for an analysis result as stored in the database.
+    """
     result_id: Optional[str] = Field(None, description="Unique identifier for the analysis result")
     area_id: str = Field(..., description="Reference to the monitoring area ID")
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow, description="Timestamp of when the analysis was recorded"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Timestamp of when the analysis was recorded"
     )
     baseline_date: str = Field(..., description="ISO formatted date of the baseline image")
     current_date: str = Field(..., description="ISO formatted date of the current image")
@@ -55,8 +56,4 @@ Pydantic model for an analysis result as stored in the database.
     error_message: Optional[str] = Field(None, description="Error message if processing failed")
 
     class Config:
-        json_encoders = {
-            datetime: lambda dt: dt.isoformat() + "Z",
-        }
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
+        populate_by_name = True

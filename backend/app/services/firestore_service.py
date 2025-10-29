@@ -49,19 +49,11 @@ class FirestoreService:
     ) -> str:
         """
         Adds a new monitoring area to the 'monitoring_areas' collection.
-
-        Args:
-            area_data (Dict[str, Any]): A dictionary containing the data for the
-                                       new monitoring area.
-
-        Returns:
-            str: The ID of the newly created document.
-
-        Raises:
-            Exception: If the database operation fails.
         """
         try:
             _, doc_ref = await self.monitoring_areas_ref.add(area_data)
+            # Update document to include its own ID as area_id
+            await doc_ref.update({"area_id": doc_ref.id})
             logger.info("Successfully added monitoring area %s", doc_ref.id)
             return doc_ref.id
         except Exception as e:
@@ -71,18 +63,14 @@ class FirestoreService:
     async def get_monitoring_area(self, area_id: str) -> Optional[Dict[str, Any]]:
         """
         Retrieves a single monitoring area by its document ID.
-
-        Args:
-            area_id (str): The ID of the monitoring area to retrieve.
-
-        Returns:
-            Optional[Dict[str, Any]]: A dictionary containing the area data if
-                                     found, otherwise None.
         """
         doc_ref = self.monitoring_areas_ref.document(area_id)
         doc = await doc_ref.get()
         if doc.exists:
-            return doc.to_dict()
+            data = doc.to_dict()
+            if "area_id" not in data:
+                data["area_id"] = doc.id
+            return data
         return None
 
     async def get_all_monitoring_areas(self, user_id: str) -> List[Dict[str, Any]]:

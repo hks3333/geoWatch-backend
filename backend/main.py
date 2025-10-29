@@ -30,17 +30,20 @@ app.include_router(monitoring_areas.router, prefix="/api", tags=["Monitoring Are
 app.include_router(callbacks.router, prefix="/api", tags=["Callbacks"])
 
 
+from typing import Optional
+from app.services.worker_client import WorkerClient
+from app.config import settings
+
+worker_client: Optional[WorkerClient] = None
+
 @app.on_event("startup")
 async def startup_event():
-    """
-    Handles application startup events.
-    """
+    global worker_client
+    worker_client = WorkerClient(worker_url=settings.ANALYSIS_WORKER_URL)
     print("GeoWatch Backend API starting up...")
-
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """
-    Handles application shutdown events.
-    """
+    if worker_client:
+        await worker_client.close()
     print("GeoWatch Backend API shutting down...")

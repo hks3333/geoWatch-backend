@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.models.analysis_result import AnalysisResultInDB
 from app.models.monitoring_area import (
     MonitoringAreaCreate,
     MonitoringAreaInDB,

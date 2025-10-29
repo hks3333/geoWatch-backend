@@ -13,21 +13,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+from typing import Optional
+
 class WorkerClient:
-    """
-    Client for interacting with the Analysis Worker service.
-    """
-
     def __init__(self, worker_url: str):
-        """
-        Initializes the WorkerClient with the base URL of the Analysis Worker.
-
-        Args:
-            worker_url (str): The base URL of the Analysis Worker service.
-        """
-        self.worker_url = worker_url.rstrip("/")  # Ensure no trailing slash
-        self.client = httpx.AsyncClient()
+        self.worker_url = worker_url.rstrip("/")
+        self._client: Optional[httpx.AsyncClient] = None
         logger.info("WorkerClient initialized with URL: %s", self.worker_url)
+    
+    @property
+    def client(self):
+        """Lazy initialization of HTTP client"""
+        if self._client is None:
+            self._client = httpx.AsyncClient()
+        return self._client
+    
+    async def close(self):
+        """Close the HTTP client"""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def trigger_analysis(
         self, area_id: str, polygon: List[List[float]], area_type: str, is_baseline: bool
