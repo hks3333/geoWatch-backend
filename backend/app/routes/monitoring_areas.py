@@ -129,14 +129,14 @@ async def get_all_monitoring_areas(
     db: FirestoreService = Depends(get_firestore_service),
 ):
     """
-    Retrieves a list of all monitoring areas stored in the system.
+    Retrieves a list of all monitoring areas for the hardcoded demo user.
 
     Returns:
         List[MonitoringAreaInDB]: A list of all monitoring areas, including their
                                   current status and details.
     """
     try:
-        areas_data = await db.get_all_monitoring_areas()
+        areas_data = await db.get_all_monitoring_areas(user_id="demo_user")
         # Convert raw dicts from Firestore to Pydantic models for validation and consistency
         return [MonitoringAreaInDB(**area) for area in areas_data]
     except Exception as e:
@@ -176,6 +176,14 @@ async def get_monitoring_area_by_id(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Monitoring area with ID '{area_id}' not found.",
             )
+        
+        # Verify user_id
+        if area_data.get("user_id") != "demo_user":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: You do not have permission to access this resource.",
+            )
+
         return MonitoringAreaInDB(**area_data)
     except HTTPException:
         # Re-raise HTTPException to be handled by FastAPI
@@ -237,6 +245,61 @@ async def get_analysis_results_for_area(
         )
 
 
+@router.get(
+    "/monitoring-areas/{area_id}/latest",
+    response_model=dict,
+    summary="Get the latest completed analysis result for a monitoring area",
+)
+async def get_latest_analysis_result(
+    area_id: str,
+    db: FirestoreService = Depends(get_firestore_service),
+):
+    """
+    Retrieves the single most recent completed analysis result for a monitoring area.
+
+    Args:
+        area_id (str): The unique identifier of the monitoring area.
+
+    Returns:
+        dict: The latest completed analysis result.
+
+    Raises:
+        HTTPException: 404 if the area or result is not found.
+        HTTPException: 403 if the user is not authorized.
+        HTTPException: 500 if there's a database error.
+    """
+    try:
+        area_data = await db.get_monitoring_area(area_id)
+        if not area_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Monitoring area with ID '{area_id}' not found.",
+            )
+
+        if area_data.get("user_id") != "demo_user":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: You do not have permission to access this resource.",
+            )
+
+        latest_result = await db.get_latest_analysis_result(area_id)
+        if not latest_result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No completed analysis found for area '{area_id}'.",
+            )
+
+        return latest_result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get latest analysis for area %s: %s", area_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve latest analysis result.",
+        )
+
+
 @router.post(
     "/monitoring-areas/{area_id}/analyze",
     status_code=status.HTTP_202_ACCEPTED,
@@ -295,6 +358,58 @@ async def trigger_new_analysis(
     return JSONResponse(content={"message": "Analysis triggered successfully"}, status_code=status.HTTP_202_ACCEPTED)
 
 
+@router.patch(
+    "/monitoring-areas/{area_id}",
+    response_model=MonitoringAreaInDB,
+    summary="Update a monitoring area's name",
+)
+async def update_monitoring_area_name(
+    area_id: str,
+    update_data: dict,
+    db: FirestoreService = Depends(get_firestore_service),
+):
+    """
+    Updates the name of a monitoring area.
+
+    Args:
+        area_id (str): The unique identifier of the monitoring area.
+        update_data (dict): A dictionary containing the new name.
+
+    Returns:
+        MonitoringAreaInDB: The updated monitoring area object.
+
+    Raises:
+        HTTPException: 404 if the monitoring area is not found.
+        HTTPException: 403 if the user is not authorized.
+        HTTPException: 500 if there's a database error.
+    """
+    try:
+        area_data = await db.get_monitoring_area(area_id)
+        if not area_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Monitoring area with ID '{area_id}' not found.",
+            )
+
+        if area_data.get("user_id") != "demo_user":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: You do not have permission to access this resource.",
+            )
+
+        await db.update_monitoring_area(area_id, {"name": update_data["name"]})
+        updated_area_data = await db.get_monitoring_area(area_id)
+        return MonitoringAreaInDB(**updated_area_data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update monitoring area %s: %s", area_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update monitoring area.",
+        )
+
+
 @router.delete(
     "/monitoring-areas/{area_id}",
     status_code=status.HTTP_200_OK,
@@ -324,6 +439,12 @@ async def soft_delete_monitoring_area(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Monitoring area with ID '{area_id}' not found.",
+            )
+        
+        if area_data.get("user_id") != "demo_user":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: You do not have permission to access this resource.",
             )
 
         await db.soft_delete_monitoring_area(area_id)

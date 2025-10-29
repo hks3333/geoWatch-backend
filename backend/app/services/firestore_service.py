@@ -85,16 +85,22 @@ class FirestoreService:
             return doc.to_dict()
         return None
 
-    async def get_all_monitoring_areas(self) -> List[Dict[str, Any]]:
+    async def get_all_monitoring_areas(self, user_id: str) -> List[Dict[str, Any]]:
         """
-        Retrieves all monitoring areas from the 'monitoring_areas' collection.
+        Retrieves all monitoring areas for a given user, excluding deleted ones.
+
+        Args:
+            user_id (str): The ID of the user to retrieve monitoring areas for.
 
         Returns:
             List[Dict[str, Any]]: A list of dictionaries, where each dictionary
                                   represents a monitoring area.
         """
         areas = []
-        async for doc in self.monitoring_areas_ref.stream():
+        query = self.monitoring_areas_ref.where("user_id", "==", user_id).where(
+            "status", "!=", "deleted"
+        )
+        async for doc in query.stream():
             area_data = doc.to_dict()
             area_data["area_id"] = doc.id
             areas.append(area_data)
@@ -124,6 +130,20 @@ class FirestoreService:
             area_id, {"status": "deleted"}
         )
 
+    async def update_analysis_result(
+        self, result_id: str, update_data: Dict[str, Any]
+    ) -> None:
+        """
+        Updates an analysis result with the provided data.
+
+        Args:
+            result_id (str): The ID of the analysis result to update.
+            update_data (Dict[str, Any]): The data to update.
+        """
+        doc_ref = self.analysis_results_ref.document(result_id)
+        await doc_ref.update(update_data)
+
+
     async def add_analysis_result(
         self, result_data: Dict[str, Any]
     ) -> str:
@@ -143,6 +163,31 @@ class FirestoreService:
         except Exception as e:
             logger.exception("Failed to add analysis result: %s", e)
             raise
+
+    async def get_latest_analysis_result(
+        self, area_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves the most recent completed analysis result for a given monitoring area.
+
+        Args:
+            area_id (str): The ID of the monitoring area.
+
+        Returns:
+            Optional[Dict[str, Any]]: The latest completed analysis result, or None if not found.
+        """
+        query = (
+            self.analysis_results_ref.where("area_id", "==", area_id)
+            .where("processing_status", "==", "completed")
+            .order_by("timestamp", direction="DESCENDING")
+            .limit(1)
+        )
+        async for doc in query.stream():
+            result_data = doc.to_dict()
+            result_data["result_id"] = doc.id
+            return result_data
+        return None
+
 
     async def get_analysis_results(
         self, area_id: str, limit: int, offset: int

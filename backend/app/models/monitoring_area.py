@@ -37,6 +37,7 @@ Used for incoming API requests.
     name: str = Field(..., min_length=3, max_length=100, description="Name of the monitoring area")
     type: MonitoringAreaType = Field(..., description="Type of monitoring (forest or water)")
     rectangle_bounds: RectangleBounds = Field(..., description="Geographical bounding box of the area")
+    user_id: str = Field("demo_user", description="User ID associated with the monitoring area")
 
 
 class MonitoringAreaInDB(MonitoringAreaCreate):
@@ -44,6 +45,7 @@ class MonitoringAreaInDB(MonitoringAreaCreate):
 Pydantic model for a monitoring area as stored in the database.
 Includes auto-generated fields and default values.
 """
+    user_id: str = Field(..., description="User ID associated with the monitoring area")
     area_id: str = Field(None, description="Unique identifier for the monitoring area")
     polygon: List[List[float]] = Field(
         ..., min_length=4, max_length=4, description="GeoJSON-like polygon coordinates (4 points)"
