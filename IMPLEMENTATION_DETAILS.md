@@ -89,3 +89,27 @@ This file defines the Pydantic models for analysis results:
 -   **`AnalysisImages`**: Stores Cloud Storage URLs for `baseline`, `current`, and `change_mask` images.
 -   **`AnalysisProcessingStatus`**: A `Literal` type for `"in_progress"`, `"completed"`, `"failed"`.
 -   **`AnalysisResultInDB`**: Represents the complete analysis result object as stored in Firestore, including `result_id`, `area_id`, `timestamp`, `baseline_date`, `current_date`, `change_detected`, `change_type`, `statistics`, `images`, `confidence`, `report_text`, `processing_status`, and `error_message`. Default values and `datetime` serialization are configured.
+
+# Additional Changes based on prompt2.md
+
+## 1. Temporary User Handling
+
+- **`user_id` Field**: Added a `user_id: str` field to the `MonitoringAreaCreate` and `MonitoringAreaInDB` models. For now, this is hardcoded to `"demo_user"` when creating new areas.
+- **Endpoint Filtering**:
+    - `GET /monitoring-areas`: Now filters to only return areas where `user_id == "demo_user"` and `status != "deleted"`.
+    - `GET /monitoring-areas/{area_id}`: Now verifies that the `user_id` of the requested area is `"demo_user"`.
+    - `PATCH /monitoring-areas/{area_id}`: Verifies the `user_id` before allowing updates.
+    - `DELETE /monitoring-areas/{area_id}`: Verifies the `user_id` before soft-deleting the area.
+
+## 2. New and Refined API Endpoints
+
+- **`PATCH /monitoring-areas/{area_id}`**: A new endpoint to update the name of a monitoring area. It requires a JSON body with a `"name"` field.
+- **`GET /monitoring-areas/{area_id}/latest`**: A new endpoint to retrieve the single most recent analysis result with a `processing_status` of `"completed"` for a specific area.
+
+## 3. Internal Callback Endpoint
+
+- **`POST /callbacks/analysis-complete`**: A new internal endpoint for the Analysis Worker to report the status of an analysis. This endpoint is protected by OIDC token verification.
+- **Callback Logic**: The endpoint receives a payload with the `area_id`, `result_id`, `status`, and either a `payload` (on success) or an `error_message` (on failure). It then updates the corresponding `analysis_results` document in Firestore.
+- **New Route File**: The callback endpoint is implemented in a new file: `backend/app/routes/callbacks.py`.
+- **Firestore Service Update**: A new `update_analysis_result` method was added to `FirestoreService` to handle updates from the callback.
+- **Main App Update**: The new `callbacks` router has been included in the main FastAPI application in `main.py`.
