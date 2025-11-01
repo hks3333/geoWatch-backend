@@ -120,7 +120,7 @@ class FirestoreService:
 
     async def update_analysis_result(
         self, result_id: str, update_data: Dict[str, Any]
-    ) -> None:
+    ) -> Optional[str]:
         """
         Updates an analysis result with the provided data.
 
@@ -130,7 +130,39 @@ class FirestoreService:
         """
         doc_ref = self.analysis_results_ref.document(result_id)
         await doc_ref.update(update_data)
+        doc = await doc_ref.get()
+        data = doc.to_dict() if doc.exists else None
+        return data.get("area_id") if data else None
 
+
+    async def create_analysis_placeholder(self, area_id: str, area_type: str) -> str:
+        """
+        Creates a placeholder document in the 'analysis_results' collection
+        with 'processing_status': 'in_progress'.
+
+        Args:
+            area_id (str): The ID of the monitoring area.
+            area_type (str): The type of the monitoring area.
+
+        Returns:
+            str: The ID of the newly created analysis result document.
+        """
+        from datetime import datetime, timezone
+
+        try:
+            placeholder_data = {
+                "area_id": area_id,
+                "area_type": area_type,
+                "timestamp": datetime.now(timezone.utc),
+                "processing_status": "in_progress",
+            }
+            _, doc_ref = await self.analysis_results_ref.add(placeholder_data)
+            await doc_ref.update({"result_id": doc_ref.id})
+            logger.info(f"Successfully created analysis placeholder {doc_ref.id}")
+            return doc_ref.id
+        except Exception as e:
+            logger.exception(f"Failed to create analysis placeholder for area {area_id}: {e}")
+            raise
 
     async def add_analysis_result(
         self, result_data: Dict[str, Any]

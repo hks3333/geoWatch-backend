@@ -113,3 +113,7 @@ This file defines the Pydantic models for analysis results:
 - **New Route File**: The callback endpoint is implemented in a new file: `backend/app/routes/callbacks.py`.
 - **Firestore Service Update**: A new `update_analysis_result` method was added to `FirestoreService` to handle updates from the callback.
 - **Main App Update**: The new `callbacks` router has been included in the main FastAPI application in `main.py`.
+
+## Geospatial Data Storage Strategy
+
+- Monitoring area polygons are stored in Firestore as ordered lists of `LatLng` objects rather than nested coordinate arrays. This structure keeps Firestore writes valid (it avoids disallowed nested arrays) while preserving latitude/longitude semantics for direct ingestion by future Google Earth Engine workers. The worker client serializes these points into `[lng, lat]` pairs when invoking downstream analysis services.

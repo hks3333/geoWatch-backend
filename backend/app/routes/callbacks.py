@@ -20,11 +20,11 @@ router = APIRouter()
 
 
 class AnalysisCompletionPayload(BaseModel):
-    area_id: str
     result_id: str
     status: str
-    payload: Dict[str, Any] = None
     error_message: str = None
+    generated_map_url: str = None
+    change_percentage: float = None
 
 
 # Dependency to get FirestoreService instance
@@ -35,18 +35,19 @@ def get_firestore_service() -> FirestoreService:
     return FirestoreService(project_id=settings.GCP_PROJECT_ID)
 
 
-async def verify_oidc_token(authorization: str = Header(...)):
+async def verify_oidc_token(authorization: str = Header(default=None)):
     """
     Verifies the OIDC token from the Authorization header.
     In a real application, this would involve a library like google-auth
     to verify the token against Google's public keys.
     For this MVP, we will just check if the header is present.
     """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing Authorization header",
-        )
+    if settings.BACKEND_ENV != "local":
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or missing Authorization header",
+            )
     # In a real app, you would verify the token here.
     # For example:
     # from google.oauth2 import id_token
@@ -81,15 +82,20 @@ async def analysis_complete_callback(
             "processing_status": payload.status,
         }
         if payload.status == "completed":
-            update_data.update(payload.payload)
+            update_data["generated_map_url"] = payload.generated_map_url
+            update_data["change_percentage"] = payload.change_percentage
         elif payload.status == "failed":
             update_data["error_message"] = payload.error_message
 
-        await db.update_analysis_result(payload.result_id, update_data)
+        area_id = await db.update_analysis_result(payload.result_id, update_data)
+        if area_id and payload.status in {"completed", "failed"}:
+            await db.update_monitoring_area(
+                area_id,
+                {"status": "active" if payload.status == "completed" else "error"},
+            )
         logger.info(
-            "Analysis result %s for area %s updated to %s.",
+            "Analysis result %s updated to %s.",
             payload.result_id,
-            payload.area_id,
             payload.status,
         )
         return {"message": "Callback processed successfully"}

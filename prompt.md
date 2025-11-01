@@ -187,3 +187,7 @@ For each file, explain:
 - Any potential issues to watch for
 
 Let's start with step 1: Project setup and requirements.txt
+
+
+
+

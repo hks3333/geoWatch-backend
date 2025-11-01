@@ -103,10 +103,14 @@ async def create_monitoring_area(
         )
 
     try:
-        # 4. Immediately triggers first analysis (async call to Analysis Worker)
-        # Note: The worker client will handle its own logging for success/failure
+        # 4. Create a placeholder for the analysis result
+        result_id = await db.create_analysis_placeholder(area_id, area.type)
+        logger.info(f"Created analysis placeholder {result_id} for area {area_id}")
+
+        # 5. Immediately triggers first analysis (async call to Analysis Worker)
         await worker.trigger_analysis(
             area_id=area_id,
+            result_id=result_id,
             polygon=polygon,
             area_type=area.type,
             is_baseline=True,
@@ -343,9 +347,14 @@ async def trigger_new_analysis(
         )
 
     try:
-        # Trigger analysis with is_baseline=False for subsequent analyses
+        # 1. Create a placeholder for the analysis result
+        result_id = await db.create_analysis_placeholder(area_id, area.type)
+        logger.info(f"Created analysis placeholder {result_id} for area {area_id}")
+
+        # 2. Trigger analysis with is_baseline=False for subsequent analyses
         await worker.trigger_analysis(
             area_id=area.area_id,
+            result_id=result_id,
             polygon=area.polygon,
             area_type=area.type,
             is_baseline=False,
