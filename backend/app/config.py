@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     GCP_PROJECT_ID: str
     ANALYSIS_WORKER_URL: str
+    BACKEND_ENV: str
 
     class Config:
         env_file = ".env"

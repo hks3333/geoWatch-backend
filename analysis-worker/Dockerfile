@@ -1,18 +1,14 @@
-# Use a specific version of the NVIDIA CUDA runtime as the base image
-# This provides the necessary CUDA libraries for PyTorch
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS base
+FROM python:3.10-slim AS base
 
 # Set environment variables to prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Install Python, pip, and other essential system dependencies
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    python3.10 \
-    python3-pip \
-    python3-venv \
-    git \
+        build-essential \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user for better security
@@ -32,11 +28,6 @@ ENV PATH="/home/appuser/venv/bin:$PATH"
 # We copy only the requirements file first to leverage Docker layer caching.
 COPY --chown=appuser:appuser ./requirements.txt .
 
-# Install PyTorch and related libraries first, as they are the largest.
-# Using a specific index URL for CUDA 12.1 can speed up installation.
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# Install the rest of the dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Final Stage ---

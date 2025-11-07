@@ -5,7 +5,6 @@ for secure service-to-service communication.
 """
 
 import logging
-from typing import Optional
 
 import httpx
 from google.auth.transport import requests
@@ -34,21 +33,11 @@ class CallbackClient:
             backend_api_url (str): The base URL of the backend API.
         """
         self.backend_api_url = backend_api_url.rstrip("/")
-        self._client: Optional[httpx.AsyncClient] = None
         logger.info("CallbackClient initialized for URL: %s", self.backend_api_url)
 
-    @property
-    def client(self) -> httpx.AsyncClient:
-        """Lazy initialization of the httpx.AsyncClient."""
-        if self._client is None:
-            self._client = httpx.AsyncClient()
-        return self._client
-
     async def close(self) -> None:
-        """Closes the httpx.AsyncClient."""
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        """No-op close maintained for backwards compatibility."""
+        logger.debug("CallbackClient.close() called - no persistent client to close.")
 
     def _get_oidc_token(self) -> str:
         """
@@ -86,21 +75,73 @@ class CallbackClient:
         """
         callback_url = f"{self.backend_api_url}/callbacks/analysis-complete"
         
-        try:
-            # Generate the OIDC token for service-to-service authentication
-            token = self._get_oidc_token()
-            headers = {"Authorization": f"Bearer {token}"}
+        headers = {}
 
-            # Send the POST request to the backend API
-            response = await self.client.post(
-                callback_url, json=payload.model_dump(), headers=headers, timeout=30.0
-            )
-            response.raise_for_status()  # Raise an exception for non-2xx status codes
-            logger.info(
-                "Successfully sent callback for result_id: %s. Status: %s",
-                payload.result_id,
-                response.status_code,
-            )
+        try:
+            if settings.BACKEND_ENV != "local":
+                token = self._get_oidc_token()
+                headers["Authorization"] = f"Bearer {token}"
+            else:
+                logger.info(
+                    "Skipping OIDC authentication for local environment callback"
+                )
+
+            # Send the POST request to the backend API with lightweight retry/backoff
+            max_attempts = 3
+            backoff = 1.0
+            last_exception: Exception | None = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.post(
+                            callback_url,
+                            json=payload.model_dump(),
+                            headers=headers,
+                            timeout=30.0,
+                        )
+                    response.raise_for_status()
+                    logger.info(
+                        "Successfully sent callback for result_id: %s on attempt %d. Status: %s",
+                        payload.result_id,
+                        attempt,
+                        response.status_code,
+                    )
+                    break
+                except (httpx.HTTPStatusError, httpx.TransportError) as send_exc:
+                    last_exception = send_exc
+                    status_text = (
+                        send_exc.response.status_code
+                        if isinstance(send_exc, httpx.HTTPStatusError)
+                        else "transport"
+                    )
+                    logger.warning(
+                        "Callback attempt %d/%d failed for result_id %s (status: %s). Retrying in %.1fs...",
+                        attempt,
+                        max_attempts,
+                        payload.result_id,
+                        status_text,
+                        backoff,
+                    )
+                    if attempt < max_attempts:
+                        await asyncio.sleep(backoff)
+                        backoff *= 2
+                except Exception as send_exc:
+                    last_exception = send_exc
+                    logger.error(
+                        "Unexpected error during callback attempt %d/%d for result_id %s: %s",
+                        attempt,
+                        max_attempts,
+                        payload.result_id,
+                        send_exc,
+                    )
+                    if attempt < max_attempts:
+                        await asyncio.sleep(backoff)
+                        backoff *= 2
+
+            else:
+                # Only executed if loop wasn't broken
+                raise last_exception  # type: ignore[misc]
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Callback failed for result_id: %s. Status: %s, Response: %s",
@@ -108,7 +149,6 @@ class CallbackClient:
                 e.response.status_code,
                 e.response.text,
             )
-            # Depending on the error, you might want to implement a retry mechanism
         except Exception as e:
             logger.error(
                 "An unexpected error occurred while sending callback for result_id: %s: %s",

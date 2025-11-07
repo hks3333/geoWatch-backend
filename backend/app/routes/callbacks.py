@@ -4,7 +4,7 @@ Analysis Worker.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from pydantic import BaseModel
@@ -22,9 +22,9 @@ router = APIRouter()
 class AnalysisCompletionPayload(BaseModel):
     result_id: str
     status: str
-    error_message: str = None
-    generated_map_url: str = None
-    change_percentage: float = None
+    error_message: Optional[str] = None
+    generated_map_url: Optional[str] = None
+    change_percentage: Optional[float] = None
 
 
 # Dependency to get FirestoreService instance

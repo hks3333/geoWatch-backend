@@ -17,10 +17,16 @@ class Settings(BaseSettings):
     """
 
     # Load environment variables from a .env file
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
-    GCP_PROJECT_ID: str = "your-gcp-project-id"
-    BACKEND_API_URL: str = "http://localhost:8000"
+    GCP_PROJECT_ID: str
+    BACKEND_API_URL: str
+    BACKEND_ENV: str = "local"
+    GCS_BUCKET_NAME: str = "geowatch-analysis-maps"
 
 
 # Create a single, reusable instance of the settings

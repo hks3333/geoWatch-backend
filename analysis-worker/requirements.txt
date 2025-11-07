@@ -6,8 +6,4 @@ google-cloud-storage
 earthengine-api
 numpy
 Pillow
-# opencv-python-headless
-# torch
-# torchvision
-# segment-anything
 google-auth

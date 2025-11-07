@@ -3,12 +3,22 @@ This module is the main entry point for the Analysis Worker FastAPI application.
 It defines the API endpoints, background tasks, and the core analysis logic.
 """
 
+import asyncio
 import logging
+from typing import List
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 
 from app.models import AnalysisPayload, CallbackPayload
 from app.services.callback_client import callback_client
+from app.services.earth_engine import (
+    compute_change_products,
+    fetch_dynamic_world_images,
+    initialize_earth_engine,
+)
+from app.services.storage import upload_visualization_to_gcs
+from app.config import settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +31,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
+def _polygon_to_lnglat(polygon: List[List[float]]) -> List[List[float]]:
+    """Ensure polygon is in [lng, lat] ordering."""
+
+    # MonitoringArea polygon is stored as LatLng, i.e., {lat, lng}; convert to list
+    converted = []
+    for point in polygon:
+        if isinstance(point, dict):
+            converted.append([point["lng"], point["lat"]])
+        else:
+            converted.append(point)
+    return converted
 
 def run_the_full_analysis(payload: AnalysisPayload):
     """
@@ -40,22 +62,32 @@ def run_the_full_analysis(payload: AnalysisPayload):
         #    - This is where you would put your `ee.Authenticate()` and `ee.Initialize()`
         # --------------------------------------------------------------------------
         logger.info(f"Step 1/5: Initializing services for {payload.result_id}")
-        # In a real app, handle potential initialization failures
+        if not initialize_earth_engine(settings.GCP_PROJECT_ID):
+            raise RuntimeError("Failed to initialise Earth Engine")
 
         # --------------------------------------------------------------------------
         # 2. FETCH IMAGERY (Sentinel-2, Dynamic World)
         #    - Use `app.services.earth_engine.get_imagery(...)`
         # --------------------------------------------------------------------------
         logger.info(f"Step 2/5: Fetching imagery for {payload.result_id}")
-        # e.g., baseline_image, latest_image = get_imagery(payload.polygon, payload.is_baseline)
+        polygon_lnglat = _polygon_to_lnglat(payload.polygon)
+        baseline_image, current_image, geometry = fetch_dynamic_world_images(
+            polygon_lnglat,
+            payload.is_baseline,
+        )
 
         # --------------------------------------------------------------------------
         # 3. PROCESS IMAGERY (SAM Segmentation & Change Detection)
         #    - Use `app.services.processor.run_segmentation(...)`
         #    - Use `app.services.processor.calculate_change(...)`
         # --------------------------------------------------------------------------
-        logger.info(f"Step 3/5: Running ML segmentation for {payload.result_id}")
-        # e.g., change_map, change_percentage = calculate_change(baseline_image, latest_image)
+        logger.info(f"Step 3/5: Running change detection for {payload.result_id}")
+        metrics, visualization_url = compute_change_products(
+            geometry,
+            baseline_image,
+            current_image,
+            payload.type,
+        )
 
         # --------------------------------------------------------------------------
         # 4. GENERATE & UPLOAD VISUALIZATIONS
@@ -63,15 +95,28 @@ def run_the_full_analysis(payload: AnalysisPayload):
         #    - Use `app.services.storage.upload_visualization(...)`
         # --------------------------------------------------------------------------
         logger.info(f"Step 4/5: Uploading visualization for {payload.result_id}")
-        # e.g., map_url = upload_visualization(change_map)
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                response = client.get(visualization_url)
+                response.raise_for_status()
+                image_bytes = response.content
+        except Exception as viz_exc:
+            raise RuntimeError(f"Failed to download visualization PNG: {viz_exc}") from viz_exc
+
+        visualization_url = upload_visualization_to_gcs(
+            image_bytes,
+            payload.result_id,
+            settings.GCP_PROJECT_ID,
+            settings.GCS_BUCKET_NAME,
+        )
 
         # --------------------------------------------------------------------------
         # 5. PREPARE SUCCESS PAYLOAD
         # --------------------------------------------------------------------------
         logger.info(f"Step 5/5: Finalizing results for {payload.result_id}")
         final_payload.status = "completed"
-        # final_payload.generated_map_url = map_url
-        # final_payload.change_percentage = change_percentage
+        final_payload.generated_map_url = visualization_url
+        final_payload.change_percentage = metrics["net_change_percentage"]
         logger.info(f"Analysis successful for result_id: {payload.result_id}")
 
     except Exception as e:
@@ -87,11 +132,18 @@ def run_the_full_analysis(payload: AnalysisPayload):
         # 'CALLBACK OR BUST': This block MUST execute successfully.
         # It ensures the backend is always notified of the outcome.
         logger.info(
-            f"Sending final callback for result_id: {payload.result_id} with status: {final_payload.status}"
+            "Sending final callback for result_id: %s with status: %s",
+            payload.result_id,
+            final_payload.status,
         )
-        # This is a fire-and-forget task. The callback client handles its own errors.
-        # In a production system, you might add this to a separate retry queue.
-        # await callback_client.send_callback(final_payload)
+        try:
+            import asyncio as aio
+            loop = aio.new_event_loop()
+            aio.set_event_loop(loop)
+            loop.run_until_complete(callback_client.send_callback(final_payload))
+            loop.close()
+        except Exception as callback_exc:
+            logger.error("Failed to send callback: %s", callback_exc)
 
 
 @app.post(
