@@ -148,7 +148,27 @@ const DashboardPage: React.FC = () => {
             setLoading(true);
             setError(null);
             const data = await api.getMonitoringAreas();
-            setAreas(data);
+            
+            // Fetch latest result for each area to get change percentage
+            const enrichedAreas = await Promise.all(
+                data.map(async (area) => {
+                    try {
+                        const latestResult = await api.getLatestAreaResult(area.area_id);
+                        if (latestResult && latestResult.processing_status === 'completed') {
+                            return {
+                                ...area,
+                                latest_change_percentage: latestResult.change_percentage,
+                                last_checked_at: latestResult.timestamp,
+                            };
+                        }
+                    } catch (err) {
+                        // If no results, just return area as-is
+                    }
+                    return area;
+                })
+            );
+            
+            setAreas(enrichedAreas);
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'Failed to fetch monitoring areas.';
             setError(errorMessage);

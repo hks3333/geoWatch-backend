@@ -6,8 +6,91 @@ import { Button, Card, Badge, Skeleton } from '../components/common/ui';
 import { ChevronLeftIcon, MapPinIcon, ClockIcon, AlertTriangleIcon, ForestIcon, WaterIcon, RefreshCwIcon, DownloadIcon } from '../components/common/Icons';
 import EditAreaModal from '../components/EditAreaModal';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
+import { fromUrl } from 'geotiff';
 
 declare const L: any; // Use Leaflet global
+
+// Helper function to load and render GeoTIFF on Leaflet map
+async function loadGeoTIFF(url: string, map: any, layerRef: any, opacity: number = 0.8, bounds?: any) {
+    console.log('Loading GeoTIFF from:', url);
+    const tiff = await fromUrl(url);
+    const image = await tiff.getImage();
+    const rasters = await image.readRasters();
+    
+    const width = image.getWidth();
+    const height = image.getHeight();
+    const numBands = rasters.length;
+    
+    console.log(`GeoTIFF loaded: ${width}x${height}, ${numBands} bands`);
+    
+    // Create canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    
+    if (!ctx) throw new Error('Could not get canvas context');
+    
+    const imageData = ctx.createImageData(width, height);
+    
+    // Helper to normalize values to 0-255 range
+    const normalize = (value: number, min: number, max: number) => {
+        if (max === min) return 0;
+        return Math.floor(((value - min) / (max - min)) * 255);
+    };
+    
+    // Find min/max for each band for normalization
+    const getMinMax = (band: any) => {
+        let min = Infinity;
+        let max = -Infinity;
+        for (let i = 0; i < band.length; i++) {
+            if (band[i] < min) min = band[i];
+            if (band[i] > max) max = band[i];
+        }
+        return { min, max };
+    };
+    
+    if (numBands >= 3) {
+        // RGB image - normalize each band
+        const r = getMinMax(rasters[0]);
+        const g = getMinMax(rasters[1]);
+        const b = getMinMax(rasters[2]);
+        
+        for (let i = 0; i < width * height; i++) {
+            imageData.data[i * 4] = normalize(rasters[0][i], r.min, r.max);
+            imageData.data[i * 4 + 1] = normalize(rasters[1][i], g.min, g.max);
+            imageData.data[i * 4 + 2] = normalize(rasters[2][i], b.min, b.max);
+            imageData.data[i * 4 + 3] = 255;
+        }
+    } else {
+        // Single band - grayscale
+        const stats = getMinMax(rasters[0]);
+        for (let i = 0; i < width * height; i++) {
+            const value = normalize(rasters[0][i], stats.min, stats.max);
+            imageData.data[i * 4] = value;
+            imageData.data[i * 4 + 1] = value;
+            imageData.data[i * 4 + 2] = value;
+            imageData.data[i * 4 + 3] = 255;
+        }
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
+    const dataUrl = canvas.toDataURL();
+    
+    // Use provided bounds (must be passed from caller)
+    if (!bounds) {
+        throw new Error('Bounds must be provided for image overlay');
+    }
+    
+    const layer = L.imageOverlay(dataUrl, bounds, { opacity, interactive: true });
+    layer.addTo(map);
+    
+    if (layerRef && layerRef.current !== undefined) {
+        layerRef.current = layer;
+    }
+    
+    return layer;
+}
 
 const AreaDetailMap: React.FC<{ area: MonitoringArea }> = ({ area }) => {
     const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -71,25 +154,40 @@ interface AnalysisMapViewerProps {
 const AnalysisMapViewer: React.FC<AnalysisMapViewerProps> = ({ mapId, imageUrl, bounds, onViewChange, view }) => {
     const mapContainerRef = useRef<HTMLDivElement>(null);
     const mapRef = useRef<any>(null);
-    const isSyncedMove = useRef(false); // Ref to track if the move is programmatic
+    const layerRef = useRef<any>(null);
+    const isSyncedMove = useRef(false);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         if (mapContainerRef.current && !mapRef.current) {
             const map = L.map(mapContainerRef.current, {
                 zoomControl: true,
                 attributionControl: false,
+                zIndex: 1,
             }).fitBounds(bounds, { padding: [10, 10] });
             mapRef.current = map;
 
             L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             }).addTo(map);
 
-            L.imageOverlay(imageUrl, bounds, { opacity: 0.8, interactive: true }).addTo(map);
+            // Load GeoTIFF
+            setLoading(true);
+            loadGeoTIFF(imageUrl, map, layerRef, 0.8, bounds)
+                .then(() => {
+                    setLoading(false);
+                    setError(null);
+                })
+                .catch(err => {
+                    console.error('Error loading GeoTIFF:', err);
+                    setError('Failed to load image');
+                    setLoading(false);
+                });
 
             map.on('moveend zoomend', () => {
                 if (isSyncedMove.current) {
-                    isSyncedMove.current = false; // Reset flag after a synced move
+                    isSyncedMove.current = false;
                     return;
                 }
                 onViewChange(map.getCenter(), map.getZoom());
@@ -115,7 +213,21 @@ const AnalysisMapViewer: React.FC<AnalysisMapViewerProps> = ({ mapId, imageUrl, 
         }
     }, [view]);
 
-    return <div ref={mapContainerRef} className="w-full h-full object-cover rounded-lg bg-gray-200" />;
+    return (
+        <div className="relative w-full h-full">
+            <div ref={mapContainerRef} className="w-full h-full object-cover rounded-lg bg-gray-200" />
+            {loading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-75 rounded-lg">
+                    <RefreshCwIcon className="h-8 w-8 animate-spin text-blue-500" />
+                </div>
+            )}
+            {error && (
+                <div className="absolute inset-0 flex items-center justify-center bg-red-50 bg-opacity-75 rounded-lg">
+                    <p className="text-red-600 text-sm">{error}</p>
+                </div>
+            )}
+        </div>
+    );
 };
 
 
@@ -132,22 +244,25 @@ interface ChangeDetectionMapViewerProps {
 const ChangeDetectionMapViewer: React.FC<ChangeDetectionMapViewerProps> = ({ mapId, currentImageUrl, changeImageUrl, bounds, onViewChange, view }) => {
     const mapContainerRef = useRef<HTMLDivElement>(null);
     const mapRef = useRef<any>(null);
+    const layersRef = useRef<any>({});
     const isSyncedMove = useRef(false);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         if (mapContainerRef.current && !mapRef.current) {
             const map = L.map(mapContainerRef.current, {
                 zoomControl: true,
                 attributionControl: false,
+                zIndex: 1,
             }).fitBounds(bounds, { padding: [10, 10] });
             mapRef.current = map;
 
             const baseLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+                attribution: '&copy; OpenStreetMap'
             });
 
             const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+                attribution: 'Esri'
             }).addTo(map);
 
             const baseMaps = {
@@ -155,18 +270,33 @@ const ChangeDetectionMapViewer: React.FC<ChangeDetectionMapViewerProps> = ({ map
                 "Street": baseLayer,
             };
 
-            const currentImageLayer = L.imageOverlay(currentImageUrl, bounds, { opacity: 0.8, interactive: true });
+            // Load GeoTIFFs
+            setLoading(true);
             
-            const overlays: { [key: string]: any } = {
-                "Current Imagery": currentImageLayer.addTo(map)
+            const loadLayers = async () => {
+                const overlays: { [key: string]: any } = {};
+                
+                // Load current image
+                const currentLayer = await loadGeoTIFF(currentImageUrl, map, null, 0.8, bounds);
+                layersRef.current.current = currentLayer;
+                overlays['Current Imagery'] = currentLayer;
+                
+                // Load change overlay if exists
+                if (changeImageUrl) {
+                    const changeLayer = await loadGeoTIFF(changeImageUrl, map, null, 0.7, bounds);
+                    layersRef.current.change = changeLayer;
+                    overlays['Change Overlay'] = changeLayer;
+                }
+                
+                // Add layer control
+                L.control.layers(baseMaps, overlays, { position: 'topright' }).addTo(map);
+                setLoading(false);
             };
-
-            if (changeImageUrl) {
-                const changeImageLayer = L.imageOverlay(changeImageUrl, bounds, { opacity: 0.7, interactive: true });
-                overlays['Change Overlay'] = changeImageLayer;
-            }
-
-            L.control.layers(baseMaps, overlays, { position: 'topright' }).addTo(map);
+            
+            loadLayers().catch(err => {
+                console.error('Error loading GeoTIFFs:', err);
+                setLoading(false);
+            });
 
             map.on('moveend zoomend', () => {
                 if (isSyncedMove.current) {
@@ -196,7 +326,16 @@ const ChangeDetectionMapViewer: React.FC<ChangeDetectionMapViewerProps> = ({ map
         }
     }, [view]);
 
-    return <div ref={mapContainerRef} id={mapId} className="w-full h-full object-cover rounded-lg bg-gray-200" />;
+    return (
+        <div className="relative w-full h-full">
+            <div ref={mapContainerRef} id={mapId} className="w-full h-full object-cover rounded-lg bg-gray-200" />
+            {loading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-75 rounded-lg">
+                    <RefreshCwIcon className="h-8 w-8 animate-spin text-blue-500" />
+                </div>
+            )}
+        </div>
+    );
 };
 
 
