@@ -7,7 +7,7 @@ from geopy.distance import geodesic
 from app.models.monitoring_area import RectangleBounds
 
 
-def validate_area_size(bounds: RectangleBounds, min_km2: float = 1.0, max_km2: float = 100.0) -> None:
+def validate_area_size(bounds: RectangleBounds, min_km2: float = 1.0, max_km2: float = 500.0) -> None:
     """
     Validates that the geographical area defined by the rectangle bounds falls
     within a specified size range (in square kilometers).

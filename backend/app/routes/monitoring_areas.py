@@ -59,7 +59,7 @@ async def create_monitoring_area(
     """
     Creates a new monitoring area with the provided details.
 
-    - Validates the input area size (1-100 km²).
+    - Validates the input area size (1-500 km²).
     - Converts the rectangular bounds into a 4-point polygon.
     - Stores the new area in Firestore with a 'pending' status.
     - Triggers an immediate asynchronous analysis call to the Analysis Worker
@@ -73,7 +73,7 @@ async def create_monitoring_area(
         HTTPException: 500 if there's a database or worker communication error.
     """
     try:
-        # 1. Validate input (area size 1-100 km²)
+        # 1. Validate input (area size 1-500 km²)
         validate_area_size(area.rectangle_bounds)
     except ValueError as e:
         logger.warning("Invalid area size for new monitoring area: %s", e)

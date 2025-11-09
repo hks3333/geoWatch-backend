@@ -4,7 +4,7 @@ Analysis Worker.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from pydantic import BaseModel
@@ -19,12 +19,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class ImageUrls(BaseModel):
+    """URLs for all generated images from the analysis."""
+    baseline_image: str
+    current_image: str
+    baseline_computed: str
+    current_computed: str
+    difference_image: str
+
+
+class AnalysisMetrics(BaseModel):
+    """Detailed metrics from the Sentinel-2 analysis."""
+    analysis_type: str
+    baseline_date: str
+    current_date: str
+    baseline_cloud_coverage: float
+    current_cloud_coverage: float
+    valid_pixels_percentage: float
+    loss_hectares: float
+    gain_hectares: float
+    stable_hectares: float
+    total_hectares: float
+    loss_percentage: float
+    gain_percentage: float
+    net_change_percentage: float
+
+
 class AnalysisCompletionPayload(BaseModel):
+    """Callback payload from the analysis worker."""
     result_id: str
     status: str
     error_message: Optional[str] = None
-    generated_map_url: Optional[str] = None
-    change_percentage: Optional[float] = None
+    image_urls: Optional[ImageUrls] = None
+    metrics: Optional[AnalysisMetrics] = None
+    bounds: Optional[List[float]] = None
 
 
 # Dependency to get FirestoreService instance
@@ -81,18 +109,40 @@ async def analysis_complete_callback(
         update_data = {
             "processing_status": payload.status,
         }
+        
         if payload.status == "completed":
-            update_data["generated_map_url"] = payload.generated_map_url
-            update_data["change_percentage"] = payload.change_percentage
+            # Store new structured data
+            if payload.image_urls:
+                update_data["image_urls"] = payload.image_urls.model_dump()
+            
+            if payload.metrics:
+                update_data["metrics"] = payload.metrics.model_dump()
+                # Also store key dates and type at top level for easy querying
+                update_data["baseline_date"] = payload.metrics.baseline_date
+                update_data["current_date"] = payload.metrics.current_date
+                update_data["analysis_type"] = payload.metrics.analysis_type
+                
+                # Backward compatibility: populate old fields
+                update_data["change_percentage"] = payload.metrics.net_change_percentage
+            
+            if payload.bounds:
+                update_data["bounds"] = payload.bounds
+            
+            # Backward compatibility: generated_map_url
+            if payload.image_urls:
+                update_data["generated_map_url"] = payload.image_urls.difference_image
+                
         elif payload.status == "failed":
             update_data["error_message"] = payload.error_message
 
         area_id = await db.update_analysis_result(payload.result_id, update_data)
+        
         if area_id and payload.status in {"completed", "failed"}:
             await db.update_monitoring_area(
                 area_id,
                 {"status": "active" if payload.status == "completed" else "error"},
             )
+        
         logger.info(
             "Analysis result %s updated to %s.",
             payload.result_id,

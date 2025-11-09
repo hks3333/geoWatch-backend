@@ -10,14 +10,14 @@ from typing import List
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 
-from app.models import AnalysisPayload, CallbackPayload
+from app.models import AnalysisPayload, AnalysisMetrics, CallbackPayload, ImageUrls
 from app.services.callback_client import callback_client
 from app.services.earth_engine import (
     compute_change_products,
-    fetch_dynamic_world_images,
+    fetch_sentinel2_images,
     initialize_earth_engine,
 )
-from app.services.storage import upload_visualization_to_gcs
+from app.services.storage import export_analysis_images_to_gcs
 from app.config import settings
 
 # Configure logging
@@ -47,83 +47,102 @@ def _polygon_to_lnglat(polygon: List[List[float]]) -> List[List[float]]:
 def run_the_full_analysis(payload: AnalysisPayload):
     """
     The main analysis function, executed in the background.
-    It simulates a long-running (3-minute) process and adheres to the
-    'Callback or Bust' principle.
+    Performs Sentinel-2 based change detection with cloud masking.
 
     Args:
         payload (AnalysisPayload): The analysis job details.
     """
-    logger.info(f"Starting analysis for result_id: {payload.result_id}")
+    logger.info(f"Starting Sentinel-2 analysis for result_id: {payload.result_id}")
     final_payload = CallbackPayload(result_id=payload.result_id, status="unknown")
 
     try:
         # --------------------------------------------------------------------------
-        # 1. AUTHENTICATE & INITIALIZE SERVICES (Earth Engine, GCS, etc.)
-        #    - This is where you would put your `ee.Authenticate()` and `ee.Initialize()`
+        # 1. INITIALIZE EARTH ENGINE
         # --------------------------------------------------------------------------
-        logger.info(f"Step 1/5: Initializing services for {payload.result_id}")
+        logger.info(f"Step 1/5: Initializing Earth Engine for {payload.result_id}")
         if not initialize_earth_engine(settings.GCP_PROJECT_ID):
             raise RuntimeError("Failed to initialise Earth Engine")
 
         # --------------------------------------------------------------------------
-        # 2. FETCH IMAGERY (Sentinel-2, Dynamic World)
-        #    - Use `app.services.earth_engine.get_imagery(...)`
+        # 2. FETCH SENTINEL-2 IMAGERY
         # --------------------------------------------------------------------------
-        logger.info(f"Step 2/5: Fetching imagery for {payload.result_id}")
+        logger.info(f"Step 2/5: Fetching Sentinel-2 imagery for {payload.result_id}")
         polygon_lnglat = _polygon_to_lnglat(payload.polygon)
-        baseline_image, current_image, geometry = fetch_dynamic_world_images(
+        
+        baseline_image, current_image, geometry, baseline_date, current_date = fetch_sentinel2_images(
             polygon_lnglat,
             payload.is_baseline,
         )
-
-        # --------------------------------------------------------------------------
-        # 3. PROCESS IMAGERY (SAM Segmentation & Change Detection)
-        #    - Use `app.services.processor.run_segmentation(...)`
-        #    - Use `app.services.processor.calculate_change(...)`
-        # --------------------------------------------------------------------------
-        logger.info(f"Step 3/5: Running change detection for {payload.result_id}")
-        metrics, visualization_url = compute_change_products(
-            geometry,
-            baseline_image,
-            current_image,
-            payload.type,
+        
+        logger.info(
+            "Retrieved images - Baseline: %s, Current: %s",
+            baseline_date,
+            current_date
         )
 
         # --------------------------------------------------------------------------
-        # 4. GENERATE & UPLOAD VISUALIZATIONS
-        #    - Create a visual map of the change detection.
-        #    - Use `app.services.storage.upload_visualization(...)`
+        # 3. COMPUTE CHANGE DETECTION WITH CLOUD MASKING
         # --------------------------------------------------------------------------
-        logger.info(f"Step 4/5: Uploading visualization for {payload.result_id}")
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.get(visualization_url)
-                response.raise_for_status()
-                image_bytes = response.content
-        except Exception as viz_exc:
-            raise RuntimeError(f"Failed to download visualization PNG: {viz_exc}") from viz_exc
-
-        visualization_url = upload_visualization_to_gcs(
-            image_bytes,
-            payload.result_id,
-            settings.GCP_PROJECT_ID,
-            settings.GCS_BUCKET_NAME,
+        logger.info(f"Step 3/5: Computing change detection for {payload.result_id}")
+        logger.info(f"Analysis type: {payload.type}")
+        
+        results = compute_change_products(
+            geometry=geometry,
+            baseline_image=baseline_image,
+            current_image=current_image,
+            classification_type=payload.type,
+            baseline_date=baseline_date,
+            current_date=current_date,
+        )
+        
+        metrics_dict = results['metrics']
+        images_dict = results['images']
+        bounds = results['bounds']
+        
+        logger.info(
+            "Change detection complete - Loss: %.2f ha, Gain: %.2f ha, Net: %.2f%%",
+            metrics_dict['loss_hectares'],
+            metrics_dict['gain_hectares'],
+            metrics_dict['net_change_percentage']
         )
 
         # --------------------------------------------------------------------------
-        # 5. PREPARE SUCCESS PAYLOAD
+        # 4. EXPORT ALL IMAGES TO GCS AS CLOUD-OPTIMIZED GEOTIFFS
+        # --------------------------------------------------------------------------
+        logger.info(f"Step 4/5: Exporting images to GCS for {payload.result_id}")
+        
+        image_urls_dict = export_analysis_images_to_gcs(
+            images=images_dict,
+            geometry=geometry,
+            result_id=payload.result_id,
+            area_id=payload.area_id,
+            analysis_type=payload.type,
+            baseline_date=baseline_date,
+            current_date=current_date,
+            gcp_project_id=settings.GCP_PROJECT_ID,
+            bucket_name=settings.GCS_BUCKET_NAME,
+        )
+        
+        logger.info("All images exported successfully")
+
+        # --------------------------------------------------------------------------
+        # 5. PREPARE SUCCESS CALLBACK PAYLOAD
         # --------------------------------------------------------------------------
         logger.info(f"Step 5/5: Finalizing results for {payload.result_id}")
+        
         final_payload.status = "completed"
-        final_payload.generated_map_url = visualization_url
-        final_payload.change_percentage = metrics["net_change_percentage"]
+        final_payload.image_urls = ImageUrls(**image_urls_dict)
+        final_payload.metrics = AnalysisMetrics(**metrics_dict)
+        final_payload.bounds = bounds
+        
         logger.info(f"Analysis successful for result_id: {payload.result_id}")
 
     except Exception as e:
         # If any step fails, log the error and prepare a 'failed' payload
-        error_message = f"An unexpected error occurred: {e}"
+        error_message = f"Analysis error: {str(e)}"
         logger.error(
-            f"Analysis failed for result_id: {payload.result_id}. Error: {error_message}"
+            f"Analysis failed for result_id: {payload.result_id}. Error: {error_message}",
+            exc_info=True
         )
         final_payload.status = "failed"
         final_payload.error_message = error_message
