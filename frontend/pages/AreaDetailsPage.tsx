@@ -1,0 +1,534 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { MonitoringArea, AnalysisResult } from '../types';
+import * as api from '../services/apiService';
+import { Button, Card, Badge, Skeleton } from '../components/common/ui';
+import { ChevronLeftIcon, MapPinIcon, ClockIcon, AlertTriangleIcon, ForestIcon, WaterIcon, RefreshCwIcon, DownloadIcon } from '../components/common/Icons';
+import EditAreaModal from '../components/EditAreaModal';
+import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
+
+declare const L: any; // Use Leaflet global
+
+const AreaDetailMap: React.FC<{ area: MonitoringArea }> = ({ area }) => {
+    const mapContainerRef = useRef<HTMLDivElement>(null);
+    const mapRef = useRef<any>(null);
+
+    useEffect(() => {
+        if (!mapContainerRef.current || !area || !area.polygon || area.polygon.length < 2) return;
+
+        // Initialize map only once
+        if (!mapRef.current) {
+            mapRef.current = L.map(mapContainerRef.current, {
+                dragging: false,
+                zoomControl: false,
+                scrollWheelZoom: false,
+                doubleClickZoom: false,
+                boxZoom: false,
+                keyboard: false,
+                tap: false,
+                touchZoom: false,
+            });
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(mapRef.current);
+        }
+
+        const map = mapRef.current;
+        
+        // Clear previous polygons if any
+        map.eachLayer((layer: any) => {
+            if (layer instanceof L.Polygon || layer instanceof L.Rectangle) {
+                map.removeLayer(layer);
+            }
+        });
+
+        const bounds = L.latLngBounds(area.polygon);
+        L.rectangle(bounds, { color: "#3B82F6", weight: 3, fillOpacity: 0.1 }).addTo(map);
+        
+        map.fitBounds(bounds, { padding: [50, 50] });
+
+        // Ensure map resizes correctly if container was hidden/resized
+        setTimeout(() => map.invalidateSize(), 100);
+
+    }, [area]);
+
+    return (
+        <div ref={mapContainerRef} className="w-full h-64 bg-gray-200 rounded-lg mt-4 z-0" />
+    );
+};
+
+
+// Helper component for synced maps
+interface AnalysisMapViewerProps {
+    mapId: string;
+    imageUrl: string;
+    bounds: any; // L.LatLngBoundsExpression
+    onViewChange: (center: any, zoom: number) => void;
+    view?: { center: any; zoom: number };
+}
+
+const AnalysisMapViewer: React.FC<AnalysisMapViewerProps> = ({ mapId, imageUrl, bounds, onViewChange, view }) => {
+    const mapContainerRef = useRef<HTMLDivElement>(null);
+    const mapRef = useRef<any>(null);
+    const isSyncedMove = useRef(false); // Ref to track if the move is programmatic
+
+    useEffect(() => {
+        if (mapContainerRef.current && !mapRef.current) {
+            const map = L.map(mapContainerRef.current, {
+                zoomControl: true,
+                attributionControl: false,
+            }).fitBounds(bounds, { padding: [10, 10] });
+            mapRef.current = map;
+
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+            }).addTo(map);
+
+            L.imageOverlay(imageUrl, bounds, { opacity: 0.8, interactive: true }).addTo(map);
+
+            map.on('moveend zoomend', () => {
+                if (isSyncedMove.current) {
+                    isSyncedMove.current = false; // Reset flag after a synced move
+                    return;
+                }
+                onViewChange(map.getCenter(), map.getZoom());
+            });
+        }
+        
+        setTimeout(() => mapRef.current?.invalidateSize(), 100);
+
+    }, [bounds, imageUrl, onViewChange]);
+
+    useEffect(() => {
+        if (mapRef.current && view) {
+            const currentCenter = mapRef.current.getCenter();
+            const currentZoom = mapRef.current.getZoom();
+            
+            const centerChanged = Math.abs(currentCenter.lat - view.center.lat) > 1e-9 || Math.abs(currentCenter.lng - view.center.lng) > 1e-9;
+            const zoomChanged = currentZoom !== view.zoom;
+
+            if (centerChanged || zoomChanged) {
+                isSyncedMove.current = true; // Set flag before programmatic move
+                mapRef.current.setView(view.center, view.zoom, { animate: false });
+            }
+        }
+    }, [view]);
+
+    return <div ref={mapContainerRef} className="w-full h-full object-cover rounded-lg bg-gray-200" />;
+};
+
+
+// Helper component for layered change detection map
+interface ChangeDetectionMapViewerProps {
+    mapId: string;
+    currentImageUrl: string;
+    changeImageUrl: string | null;
+    bounds: any; // L.LatLngBoundsExpression
+    onViewChange: (center: any, zoom: number) => void;
+    view?: { center: any; zoom: number };
+}
+
+const ChangeDetectionMapViewer: React.FC<ChangeDetectionMapViewerProps> = ({ mapId, currentImageUrl, changeImageUrl, bounds, onViewChange, view }) => {
+    const mapContainerRef = useRef<HTMLDivElement>(null);
+    const mapRef = useRef<any>(null);
+    const isSyncedMove = useRef(false);
+
+    useEffect(() => {
+        if (mapContainerRef.current && !mapRef.current) {
+            const map = L.map(mapContainerRef.current, {
+                zoomControl: true,
+                attributionControl: false,
+            }).fitBounds(bounds, { padding: [10, 10] });
+            mapRef.current = map;
+
+            const baseLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+            });
+
+            const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+            }).addTo(map);
+
+            const baseMaps = {
+                "Satellite": satelliteLayer,
+                "Street": baseLayer,
+            };
+
+            const currentImageLayer = L.imageOverlay(currentImageUrl, bounds, { opacity: 0.8, interactive: true });
+            
+            const overlays: { [key: string]: any } = {
+                "Current Imagery": currentImageLayer.addTo(map)
+            };
+
+            if (changeImageUrl) {
+                const changeImageLayer = L.imageOverlay(changeImageUrl, bounds, { opacity: 0.7, interactive: true });
+                overlays['Change Overlay'] = changeImageLayer;
+            }
+
+            L.control.layers(baseMaps, overlays, { position: 'topright' }).addTo(map);
+
+            map.on('moveend zoomend', () => {
+                if (isSyncedMove.current) {
+                    isSyncedMove.current = false;
+                    return;
+                }
+                onViewChange(map.getCenter(), map.getZoom());
+            });
+        }
+        
+        setTimeout(() => mapRef.current?.invalidateSize(), 100);
+
+    }, [bounds, currentImageUrl, changeImageUrl, onViewChange]);
+
+    useEffect(() => {
+        if (mapRef.current && view) {
+            const currentCenter = mapRef.current.getCenter();
+            const currentZoom = mapRef.current.getZoom();
+            
+            const centerChanged = Math.abs(currentCenter.lat - view.center.lat) > 1e-9 || Math.abs(currentCenter.lng - view.center.lng) > 1e-9;
+            const zoomChanged = currentZoom !== view.zoom;
+
+            if (centerChanged || zoomChanged) {
+                isSyncedMove.current = true;
+                mapRef.current.setView(view.center, view.zoom, { animate: false });
+            }
+        }
+    }, [view]);
+
+    return <div ref={mapContainerRef} id={mapId} className="w-full h-full object-cover rounded-lg bg-gray-200" />;
+};
+
+
+const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea }> = ({ result, area }) => {
+    // Check if analysis is complete and has image URLs
+    const isComplete = result.processing_status === 'completed';
+    const hasImageUrls = result.image_urls || (result.baseline_map_url && result.current_map_url);
+    
+    // If analysis failed or is in progress, show status message
+    if (!isComplete || !hasImageUrls) {
+        return (
+            <Card className="p-10 text-center">
+                <h3 className="text-lg font-semibold">
+                    {result.processing_status === 'failed' ? 'Analysis Failed' : 'Analysis In Progress'}
+                </h3>
+                <p className="mt-2 text-gray-500">
+                    {result.error_message || 'Analysis is still being processed. Please check back later.'}
+                </p>
+                <p className="mt-1 text-sm text-gray-400">
+                    Status: {result.processing_status}
+                </p>
+            </Card>
+        );
+    }
+
+    const changePercentage = result.change_percentage ?? 0;
+    const loss = changePercentage < 0 ? Math.abs(changePercentage) : 0;
+    const gain = changePercentage > 0 ? changePercentage : 0;
+    const stable = 100 - loss - gain;
+
+    const [mapView, setMapView] = useState<{ center: any; zoom: number } | undefined>();
+    const bounds = React.useMemo(() => L.latLngBounds(area.polygon), [area.polygon]);
+
+    const handleViewChange = useCallback((center: any, zoom: number) => {
+        setMapView({ center, zoom });
+    }, []);
+
+    // Use new image_urls if available, fallback to legacy fields
+    const baselineUrl = result.image_urls?.baseline_image || result.baseline_map_url;
+    const currentUrl = result.image_urls?.current_image || result.current_map_url;
+    const changeUrl = result.image_urls?.difference_image || result.change_map_url || result.generated_map_url;
+
+    return (
+        <Card>
+            <h3 className="text-xl font-bold mb-4">Latest Analysis Comparison</h3>
+            <p className="text-sm text-gray-500 mb-6">Completed on {new Date(result.timestamp).toLocaleString()}</p>
+            
+            <div className="space-y-8">
+                {/* Baseline and Current Map Row */}
+                {baselineUrl && currentUrl && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[450px]">
+                        <div className="flex flex-col">
+                            <h4 className="font-semibold mb-2 text-gray-700 text-center">Baseline</h4>
+                            <AnalysisMapViewer
+                                mapId={`map-baseline-${result.result_id}`}
+                                imageUrl={baselineUrl}
+                                bounds={bounds}
+                                onViewChange={handleViewChange}
+                                view={mapView}
+                            />
+                        </div>
+                        <div className="flex flex-col">
+                            <h4 className="font-semibold mb-2 text-gray-700 text-center">Current</h4>
+                            <AnalysisMapViewer
+                                mapId={`map-current-${result.result_id}`}
+                                imageUrl={currentUrl}
+                                bounds={bounds}
+                                onViewChange={handleViewChange}
+                                view={mapView}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* Change Detection Map Row */}
+                {currentUrl && (
+                    <div className="pt-4 flex flex-col h-[600px]">
+                        <h4 className="font-semibold mb-2 text-gray-700 text-center">Change Detection (Layered)</h4>
+                        <ChangeDetectionMapViewer
+                            mapId={`map-change-${result.result_id}`}
+                            currentImageUrl={currentUrl}
+                            changeImageUrl={changeUrl || null}
+                            bounds={bounds}
+                            onViewChange={handleViewChange}
+                            view={mapView}
+                        />
+                    </div>
+                )}
+            </div>
+
+            <div className="mt-8 border-t pt-6">
+                 <h4 className="font-bold text-lg mb-4">Detailed Statistics</h4>
+                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+                     <div className="p-4 bg-red-50 rounded-lg">
+                         <p className="text-sm text-red-700">Loss</p>
+                         <p className="text-2xl font-bold text-red-600">{loss.toFixed(1)}%</p>
+                     </div>
+                     <div className="p-4 bg-green-50 rounded-lg">
+                         <p className="text-sm text-green-700">Gain</p>
+                         <p className="text-2xl font-bold text-green-600">{gain.toFixed(1)}%</p>
+                     </div>
+                      <div className="p-4 bg-gray-100 rounded-lg">
+                         <p className="text-sm text-gray-700">Stable</p>
+                         <p className="text-2xl font-bold text-gray-600">{stable.toFixed(1)}%</p>
+                     </div>
+                 </div>
+            </div>
+        </Card>
+    );
+};
+
+const AreaDetailsPage: React.FC = () => {
+    const { areaId } = useParams<{ areaId: string }>();
+    const navigate = useNavigate();
+    const [area, setArea] = useState<MonitoringArea | null>(null);
+    const [results, setResults] = useState<AnalysisResult[]>([]);
+    const [analysisInProgress, setAnalysisInProgress] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [isTriggering, setIsTriggering] = useState(false);
+    const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+
+    const fetchData = useCallback(async () => {
+        if (!areaId) return;
+        try {
+            setLoading(true);
+            setError(null);
+            const areaData = await api.getMonitoringArea(areaId);
+            if (!areaData) {
+                setError('Monitoring area not found.');
+                setLoading(false);
+                return;
+            }
+            setArea(areaData);
+            const resultsData = await api.getAreaResults(areaId, 10, 0);
+            setResults(resultsData.results);
+            setAnalysisInProgress(resultsData.analysis_in_progress);
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : 'Failed to fetch area details.';
+            setError(errorMessage);
+        } finally {
+            setLoading(false);
+        }
+    }, [areaId]);
+
+    useEffect(() => {
+        fetchData();
+    }, [fetchData]);
+
+    const handleTriggerAnalysis = async () => {
+        if (!areaId || analysisInProgress) return;
+        setIsTriggering(true);
+        try {
+            await api.triggerAnalysis(areaId);
+            setAnalysisInProgress(true);
+            // Poll for updates
+            const interval = setInterval(async () => {
+                const data = await api.getAreaResults(areaId, 10, 0);
+                if (!data.analysis_in_progress) {
+                    clearInterval(interval);
+                    fetchData();
+                }
+            }, 3000);
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : 'Failed to trigger analysis.';
+            alert(errorMessage);
+        } finally {
+            setIsTriggering(false);
+        }
+    };
+
+    const handleSaveName = async (newName: string) => {
+        if (!areaId || !area) return;
+
+        const originalArea = area;
+        setArea(prevArea => prevArea ? { ...prevArea, name: newName } : null);
+        
+        try {
+            await api.updateMonitoringArea(areaId, newName);
+        } catch (error) {
+             setArea(originalArea);
+            const errorMessage = error instanceof Error ? error.message : 'Failed to update area name.';
+            alert(errorMessage);
+        }
+    };
+
+    const handleDelete = async () => {
+        if (!areaId) return;
+        setIsDeleting(true);
+        try {
+            await api.deleteMonitoringArea(areaId);
+            navigate('/');
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Failed to delete area.';
+            alert(errorMessage);
+            setIsDeleting(false);
+        }
+    };
+
+
+    if (loading) {
+        return <div className="p-8"><Skeleton className="h-screen w-full" /></div>;
+    }
+
+    if (error) {
+        return (
+            <div className="flex flex-col items-center justify-center h-screen text-red-500">
+                <AlertTriangleIcon className="h-16 w-16" />
+                <p className="mt-4 text-xl">{error}</p>
+                <Link to="/" className="mt-8">
+                    <Button><ChevronLeftIcon className="h-4 w-4 mr-2" />Back to Dashboard</Button>
+                </Link>
+            </div>
+        );
+    }
+
+    if (!area) return null;
+
+    const latestResult = results[0];
+
+    return (
+        <>
+            <div className="min-h-screen bg-gray-50">
+                <header className="bg-white shadow-sm">
+                    <div className="max-w-screen-2xl mx-auto py-4 px-4 sm:px-6 lg:px-8">
+                        <div className="flex items-center justify-between">
+                             <div className="flex items-center">
+                                <Link to="/" className="text-gray-500 hover:text-gray-700 flex items-center">
+                                    <ChevronLeftIcon className="h-5 w-5" />
+                                    <span className="ml-2 font-medium">Dashboard</span>
+                                </Link>
+                                <span className="mx-2 text-gray-300">/</span>
+                                <h1 className="text-2xl font-bold text-gray-900">{area.name}</h1>
+                            </div>
+                            <div className="flex items-center space-x-3">
+                                <Button variant="outline" onClick={() => setIsEditModalOpen(true)}>Edit</Button>
+                                <Button variant="destructive" onClick={() => setIsDeleteModalOpen(true)}>Delete</Button>
+                                <Button onClick={handleTriggerAnalysis} disabled={analysisInProgress || isTriggering}>
+                                    {analysisInProgress || isTriggering ? (
+                                        <><RefreshCwIcon className="h-4 w-4 mr-2 animate-spin" /> Analyzing...</>
+                                    ) : (
+                                        <><RefreshCwIcon className="h-4 w-4 mr-2" /> Trigger Analysis</>
+                                    )}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </header>
+                <main className="py-10">
+                    <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        {/* Left Column - Area Info */}
+                        <div className="lg:col-span-1">
+                            <Card>
+                                <h2 className="text-xl font-bold mb-4">Area Information</h2>
+                                <div className="space-y-3 text-sm text-gray-600">
+                                    <div className="flex justify-between"><strong>Name:</strong> <span>{area.name}</span></div>
+                                    <div className="flex justify-between items-center"><strong>Type:</strong> <Badge variant={area.type === 'forest' ? 'green' : 'blue'}>{area.type === 'forest' ? <ForestIcon className="h-4 w-4 mr-1.5"/> : <WaterIcon className="h-4 w-4 mr-1.5" />}{area.type}</Badge></div>
+                                    <div className="flex justify-between"><strong>Status:</strong> <span>{area.status}</span></div>
+                                    <div className="flex justify-between"><strong>Created:</strong> <span>{new Date(area.created_at).toLocaleDateString()}</span></div>
+                                    <div className="flex justify-between"><strong>Last Analysis:</strong> <span>{area.last_checked_at ? new Date(area.last_checked_at).toLocaleDateString() : 'N/A'}</span></div>
+                                    <div className="flex justify-between"><strong>Total Analyses:</strong> <span>{area.total_analyses}</span></div>
+                                </div>
+                               <AreaDetailMap area={area} />
+                            </Card>
+                        </div>
+
+                        {/* Right Column - Analysis Results */}
+                        <div className="lg:col-span-2 space-y-8">
+                            {analysisInProgress && (
+                                 <Card className="text-center">
+                                    <RefreshCwIcon className="h-8 w-8 mx-auto text-blue-500 animate-spin" />
+                                    <h3 className="mt-4 text-lg font-semibold">Analysis In Progress...</h3>
+                                    <p className="mt-1 text-gray-500">This may take a few minutes. The page will update automatically when complete.</p>
+                                </Card>
+                            )}
+                            {latestResult && area ? (
+                                <ComparisonViewer result={latestResult} area={area} />
+                            ) : !analysisInProgress && (
+                                <Card className="p-10 text-center">
+                                    <h3 className="text-lg font-semibold">No analysis results yet</h3>
+                                    <p className="mt-2 text-gray-500">Trigger an analysis to get started.</p>
+                                </Card>
+                            )}
+
+                            {/* Analysis History */}
+                            <Card>
+                                <h3 className="text-xl font-bold mb-4">Analysis History</h3>
+                                {results.length > 0 ? (
+                                    <ul className="divide-y divide-gray-200">
+                                        {results.map(r => (
+                                            <li key={r.result_id} className="py-4 flex items-center justify-between">
+                                                <div>
+                                                    <p className="font-semibold">{new Date(r.timestamp).toLocaleString()}</p>
+                                                    <p className={`text-sm ${r.change_percentage && r.change_percentage > 0 ? 'text-green-600' : (r.change_percentage && r.change_percentage < 0 ? 'text-red-600' : 'text-gray-500')}`}>
+                                                        Change: {r.change_percentage !== null ? `${r.change_percentage.toFixed(1)}%` : 'N/A'}
+                                                    </p>
+                                                </div>
+                                                <div className='flex items-center space-x-4'>
+                                                    <Badge className={r.processing_status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}>{r.processing_status}</Badge>
+                                                    <Button variant="outline" size="sm">
+                                                        <DownloadIcon className="h-4 w-4 mr-2" />
+                                                        Download
+                                                    </Button>
+                                                </div>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                ) : (
+                                    <p className="text-gray-500 text-center py-4">No analysis history available.</p>
+                                )}
+                            </Card>
+                        </div>
+                    </div>
+                </main>
+            </div>
+            {area && <EditAreaModal 
+                isOpen={isEditModalOpen}
+                onClose={() => setIsEditModalOpen(false)}
+                onSave={handleSaveName}
+                currentName={area.name}
+            />}
+            {area && <DeleteConfirmationModal 
+                isOpen={isDeleteModalOpen}
+                onClose={() => setIsDeleteModalOpen(false)}
+                onConfirm={handleDelete}
+                areaName={area.name}
+                isDeleting={isDeleting}
+            />}
+        </>
+    );
+};
+
+export default AreaDetailsPage;

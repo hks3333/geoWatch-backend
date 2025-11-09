@@ -1,0 +1,7 @@
+{
+  "name": "GeoWatch - Satellite Monitoring Dashboard",
+  "description": "A modern, clean dashboard frontend for GeoWatch, a satellite monitoring system that tracks forest and water changes using satellite imagery and AI.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
