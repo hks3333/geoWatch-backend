@@ -87,7 +87,7 @@ class FirestoreService:
         areas = []
         query = self.monitoring_areas_ref.where("user_id", "==", user_id).where(
             "status", "!=", "deleted"
-        )
+        ).order_by("created_at", direction="DESCENDING")
         async for doc in query.stream():
             area_data = doc.to_dict()
             area_data["area_id"] = doc.id

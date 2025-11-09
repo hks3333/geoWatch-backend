@@ -149,6 +149,18 @@ def fetch_sentinel2_images(
 ) -> Tuple[ee.Image, ee.Image, ee.Geometry, str, str]:
     """
     Retrieve baseline and current Sentinel-2 images for the region.
+    
+    Strategy:
+    - Current image: Latest available in last 60 days
+    - Baseline image: ~30 days before current image (±10 days window)
+    
+    Re-analysis behavior:
+    - If triggered again, will fetch the LATEST image (last 60 days)
+    - If no new Sentinel-2 pass occurred, will get the same image as before
+    - Baseline is always calculated as 30 days before the current image
+    - This means: If same current image, baseline will also be the same
+    - Result: No change detected (which is correct - no new data available)
+    
     Returns: (baseline_image, current_image, geometry, baseline_date, current_date)
     """
     geometry = _build_geometry(polygon)
@@ -164,12 +176,9 @@ def fetch_sentinel2_images(
         raise RuntimeError("No Sentinel-2 data available for current window")
 
     # Baseline image: ~1 month before current (±10 days window)
-    if is_baseline:
-        # For first analysis, go back 1 month from current date
-        baseline_center = datetime.strptime(current_date, '%Y-%m-%d') - timedelta(days=30)
-    else:
-        # For subsequent analyses, also go back 1 month
-        baseline_center = datetime.strptime(current_date, '%Y-%m-%d') - timedelta(days=30)
+    # Note: For both first and subsequent analyses, we use the same logic
+    # This ensures consistent comparison windows
+    baseline_center = datetime.strptime(current_date, '%Y-%m-%d') - timedelta(days=30)
     
     baseline_start = baseline_center - timedelta(days=10)
     baseline_end = baseline_center + timedelta(days=10)

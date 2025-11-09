@@ -18,9 +18,20 @@
         user-select: none;
         -webkit-user-select: none; /* Safari */
       }
+      /* Smooth spinner animation */
+      @keyframes spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .animate-spin {
+        animation: spin 1s linear infinite;
+      }
       @import url('https://rsms.me/inter/inter.css');
-    </style>
-  <script type="importmap">
+    </style>  <script type="importmap">
 {
   "imports": {
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",

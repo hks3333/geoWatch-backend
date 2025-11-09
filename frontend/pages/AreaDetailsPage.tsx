@@ -259,15 +259,15 @@ const ChangeDetectionMapViewer: React.FC<ChangeDetectionMapViewerProps> = ({ map
 
             const baseLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
                 attribution: '&copy; OpenStreetMap'
-            });
+            }).addTo(map);
 
             const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
                 attribution: 'Esri'
-            }).addTo(map);
+            });
 
             const baseMaps = {
-                "Satellite": satelliteLayer,
                 "Street": baseLayer,
+                "Satellite": satelliteLayer,
             };
 
             // Load GeoTIFFs
@@ -386,9 +386,18 @@ const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea 
             <div className="space-y-8">
                 {/* Baseline and Current Map Row */}
                 {baselineUrl && currentUrl && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[450px]">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[550px]">
                         <div className="flex flex-col">
-                            <h4 className="font-semibold mb-2 text-gray-700 text-center">Baseline</h4>
+                            <div className="mb-2 text-center">
+                                <h4 className="font-semibold text-gray-700">Baseline</h4>
+                                {result.metrics && (
+                                    <div className="text-xs text-gray-500 mt-1">
+                                        <span>{result.metrics.baseline_date}</span>
+                                        <span className="mx-2">•</span>
+                                        <span>Cloud: {result.metrics.baseline_cloud_coverage?.toFixed(1)}%</span>
+                                    </div>
+                                )}
+                            </div>
                             <AnalysisMapViewer
                                 mapId={`map-baseline-${result.result_id}`}
                                 imageUrl={baselineUrl}
@@ -398,7 +407,16 @@ const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea 
                             />
                         </div>
                         <div className="flex flex-col">
-                            <h4 className="font-semibold mb-2 text-gray-700 text-center">Current</h4>
+                            <div className="mb-2 text-center">
+                                <h4 className="font-semibold text-gray-700">Current</h4>
+                                {result.metrics && (
+                                    <div className="text-xs text-gray-500 mt-1">
+                                        <span>{result.metrics.current_date}</span>
+                                        <span className="mx-2">•</span>
+                                        <span>Cloud: {result.metrics.current_cloud_coverage?.toFixed(1)}%</span>
+                                    </div>
+                                )}
+                            </div>
                             <AnalysisMapViewer
                                 mapId={`map-current-${result.result_id}`}
                                 imageUrl={currentUrl}
@@ -412,8 +430,24 @@ const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea 
 
                 {/* Change Detection Map Row */}
                 {currentUrl && (
-                    <div className="pt-4 flex flex-col h-[600px]">
-                        <h4 className="font-semibold mb-2 text-gray-700 text-center">Change Detection (Layered)</h4>
+                    <div className="pt-4 flex flex-col h-[550px]">
+                        <div className="mb-3">
+                            <h4 className="font-semibold text-gray-700 text-center mb-2">Change Detection (Layered)</h4>
+                            <div className="flex justify-center items-center gap-6 text-sm">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-red-500 rounded"></div>
+                                    <span className="text-gray-600">{area.type === 'forest' ? 'Forest Loss' : 'Water Loss'}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-green-500 rounded"></div>
+                                    <span className="text-gray-600">Stable</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-blue-500 rounded"></div>
+                                    <span className="text-gray-600">{area.type === 'forest' ? 'Forest Gain' : 'Water Gain'}</span>
+                                </div>
+                            </div>
+                        </div>
                         <ChangeDetectionMapViewer
                             mapId={`map-change-${result.result_id}`}
                             currentImageUrl={currentUrl}
@@ -487,20 +521,24 @@ const AreaDetailsPage: React.FC = () => {
         fetchData();
     }, [fetchData]);
 
+    // Poll for updates when analysis is in progress
+    useEffect(() => {
+        if (!analysisInProgress) return;
+
+        const pollInterval = setInterval(() => {
+            fetchData();
+        }, 20000); // Poll every 20 seconds
+
+        return () => clearInterval(pollInterval);
+    }, [analysisInProgress, fetchData]);
+
     const handleTriggerAnalysis = async () => {
         if (!areaId || analysisInProgress) return;
         setIsTriggering(true);
         try {
             await api.triggerAnalysis(areaId);
-            setAnalysisInProgress(true);
-            // Poll for updates
-            const interval = setInterval(async () => {
-                const data = await api.getAreaResults(areaId, 10, 0);
-                if (!data.analysis_in_progress) {
-                    clearInterval(interval);
-                    fetchData();
-                }
-            }, 3000);
+            // Refresh data immediately to get the in_progress status
+            await fetchData();
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'Failed to trigger analysis.';
             alert(errorMessage);

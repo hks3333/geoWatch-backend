@@ -135,6 +135,7 @@ async def get_all_monitoring_areas(
 ):
     """
     Retrieves a list of all monitoring areas for the hardcoded demo user.
+    Enriches each area with latest analysis info (last_checked_at, latest_change_percentage).
 
     Returns:
         List[MonitoringAreaInDB]: A list of all monitoring areas, including their
@@ -142,8 +143,23 @@ async def get_all_monitoring_areas(
     """
     try:
         areas_data = await db.get_all_monitoring_areas(user_id="demo_user")
-        # Convert raw dicts from Firestore to Pydantic models for validation and consistency
-        return [MonitoringAreaInDB(**area) for area in areas_data]
+        
+        # Enrich each area with latest analysis info
+        enriched_areas = []
+        for area in areas_data:
+            try:
+                # Get latest completed result
+                latest_result = await db.get_latest_analysis_result(area["area_id"])
+                if latest_result and latest_result.get("processing_status") == "completed":
+                    area["last_checked_at"] = latest_result.get("timestamp")
+                    area["latest_change_percentage"] = latest_result.get("change_percentage")
+            except Exception as e:
+                logger.warning(f"Failed to get latest result for area {area['area_id']}: {e}")
+                # Continue without enrichment
+            
+            enriched_areas.append(MonitoringAreaInDB(**area))
+        
+        return enriched_areas
     except Exception as e:
         logger.error("Failed to retrieve all monitoring areas: %s", e)
         raise HTTPException(
