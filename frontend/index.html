@@ -10,6 +10,8 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <style>
+      @import url('https://rsms.me/inter/inter.css');
+      
       body {
         font-family: 'Inter', sans-serif;
       }
@@ -30,7 +32,58 @@
       .animate-spin {
         animation: spin 1s linear infinite;
       }
-      @import url('https://rsms.me/inter/inter.css');
+      
+      /* Markdown content styling */
+      .markdown-content {
+        line-height: 1.7;
+        color: #374151;
+      }
+      .markdown-content h1 {
+        font-size: 1.875rem;
+        font-weight: 700;
+        margin-top: 2rem;
+        margin-bottom: 1rem;
+        color: #1a202c;
+        border-bottom: 2px solid #e2e8f0;
+        padding-bottom: 0.5rem;
+      }
+      .markdown-content h2 {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin-top: 1.5rem;
+        margin-bottom: 0.75rem;
+        color: #2d3748;
+      }
+      .markdown-content h3 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-top: 1.25rem;
+        margin-bottom: 0.5rem;
+        color: #4a5568;
+      }
+      .markdown-content p {
+        margin-bottom: 1rem;
+      }
+      .markdown-content ul {
+        list-style-type: disc;
+        padding-left: 1.5rem;
+        margin-bottom: 1rem;
+      }
+      .markdown-content li {
+        margin-bottom: 0.5rem;
+      }
+      .markdown-content strong {
+        font-weight: 600;
+        color: #1a202c;
+      }
+      .markdown-content code {
+        background-color: #f7fafc;
+        padding: 0.125rem 0.25rem;
+        border-radius: 0.25rem;
+        font-size: 0.875rem;
+        font-family: 'Courier New', monospace;
+      }
+      
     </style>  <script type="importmap">
 {
   "imports": {

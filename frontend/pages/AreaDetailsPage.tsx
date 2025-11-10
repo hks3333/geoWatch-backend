@@ -3,16 +3,16 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { MonitoringArea, AnalysisResult } from '../types';
 import * as api from '../services/apiService';
 import { Button, Card, Badge, Skeleton } from '../components/common/ui';
-import { ChevronLeftIcon, MapPinIcon, ClockIcon, AlertTriangleIcon, ForestIcon, WaterIcon, RefreshCwIcon, DownloadIcon } from '../components/common/Icons';
+import { ChevronLeftIcon, MapPinIcon, ClockIcon, AlertTriangleIcon, ForestIcon, WaterIcon, RefreshCwIcon, DownloadIcon, Loader2Icon } from '../components/common/Icons';
 import EditAreaModal from '../components/EditAreaModal';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
+import ReportViewer from '../components/ReportViewer';
 import { fromUrl } from 'geotiff';
 
 declare const L: any; // Use Leaflet global
 
 // Helper function to load and render GeoTIFF on Leaflet map
 async function loadGeoTIFF(url: string, map: any, layerRef: any, opacity: number = 0.8, bounds?: any) {
-    console.log('Loading GeoTIFF from:', url);
     const tiff = await fromUrl(url);
     const image = await tiff.getImage();
     const rasters = await image.readRasters();
@@ -20,8 +20,6 @@ async function loadGeoTIFF(url: string, map: any, layerRef: any, opacity: number
     const width = image.getWidth();
     const height = image.getHeight();
     const numBands = rasters.length;
-    
-    console.log(`GeoTIFF loaded: ${width}x${height}, ${numBands} bands`);
     
     // Create canvas
     const canvas = document.createElement('canvas');
@@ -218,7 +216,7 @@ const AnalysisMapViewer: React.FC<AnalysisMapViewerProps> = ({ mapId, imageUrl, 
             <div ref={mapContainerRef} className="w-full h-full object-cover rounded-lg bg-gray-200" />
             {loading && (
                 <div className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-75 rounded-lg">
-                    <RefreshCwIcon className="h-8 w-8 animate-spin text-blue-500" />
+                    <Loader2Icon className="h-8 w-8 animate-spin text-blue-500" />
                 </div>
             )}
             {error && (
@@ -331,7 +329,7 @@ const ChangeDetectionMapViewer: React.FC<ChangeDetectionMapViewerProps> = ({ map
             <div ref={mapContainerRef} id={mapId} className="w-full h-full object-cover rounded-lg bg-gray-200" />
             {loading && (
                 <div className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-75 rounded-lg">
-                    <RefreshCwIcon className="h-8 w-8 animate-spin text-blue-500" />
+                    <Loader2Icon className="h-8 w-8 animate-spin text-blue-500" />
                 </div>
             )}
         </div>
@@ -342,7 +340,7 @@ const ChangeDetectionMapViewer: React.FC<ChangeDetectionMapViewerProps> = ({ map
 const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea }> = ({ result, area }) => {
     // Check if analysis is complete and has image URLs
     const isComplete = result.processing_status === 'completed';
-    const hasImageUrls = result.image_urls || (result.baseline_map_url && result.current_map_url);
+    const hasImageUrls = result.image_urls;
     
     // If analysis failed or is in progress, show status message
     if (!isComplete || !hasImageUrls) {
@@ -373,10 +371,10 @@ const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea 
         setMapView({ center, zoom });
     }, []);
 
-    // Use new image_urls if available, fallback to legacy fields
-    const baselineUrl = result.image_urls?.baseline_image || result.baseline_map_url;
-    const currentUrl = result.image_urls?.current_image || result.current_map_url;
-    const changeUrl = result.image_urls?.difference_image || result.change_map_url || result.generated_map_url;
+    // Extract image URLs from Sentinel-2 analysis
+    const baselineUrl = result.image_urls.baseline_image;
+    const currentUrl = result.image_urls.current_image;
+    const changeUrl = result.image_urls.difference_image;
 
     return (
         <Card>
@@ -493,27 +491,56 @@ const AreaDetailsPage: React.FC = () => {
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
+    const resultsRef = useRef<AnalysisResult[]>([]);
 
-    const fetchData = useCallback(async () => {
+    const fetchData = useCallback(async (isPolling = false) => {
         if (!areaId) return;
         try {
-            setLoading(true);
+            // Only show loading spinner on initial load, not during polling
+            if (!isPolling) {
+                setLoading(true);
+            }
             setError(null);
+            
             const areaData = await api.getMonitoringArea(areaId);
             if (!areaData) {
                 setError('Monitoring area not found.');
                 setLoading(false);
                 return;
             }
-            setArea(areaData);
+            
             const resultsData = await api.getAreaResults(areaId, 10, 0);
-            setResults(resultsData.results);
-            setAnalysisInProgress(resultsData.analysis_in_progress);
+            
+            // Check if any result is still in progress
+            const hasInProgress = resultsData.results.some(
+                (r: AnalysisResult) => r.processing_status === 'in_progress'
+            );
+            
+            // Only update state if data has actually changed
+            const latestResultId = resultsData.results[0]?.result_id;
+            const currentLatestId = resultsRef.current[0]?.result_id;
+            const latestStatus = resultsData.results[0]?.processing_status;
+            const currentStatus = resultsRef.current[0]?.processing_status;
+            
+            const hasDataChanged = 
+                latestResultId !== currentLatestId || 
+                latestStatus !== currentStatus ||
+                resultsData.results.length !== resultsRef.current.length;
+            
+            // Update state only if there are changes or it's the initial load
+            if (!isPolling || hasDataChanged) {
+                setArea(areaData);
+                setResults(resultsData.results);
+                resultsRef.current = resultsData.results;
+                setAnalysisInProgress(hasInProgress || resultsData.analysis_in_progress);
+            }
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'Failed to fetch area details.';
             setError(errorMessage);
         } finally {
-            setLoading(false);
+            if (!isPolling) {
+                setLoading(false);
+            }
         }
     }, [areaId]);
 
@@ -526,7 +553,7 @@ const AreaDetailsPage: React.FC = () => {
         if (!analysisInProgress) return;
 
         const pollInterval = setInterval(() => {
-            fetchData();
+            fetchData(true); // Pass true to indicate this is a polling request
         }, 20000); // Poll every 20 seconds
 
         return () => clearInterval(pollInterval);
@@ -605,9 +632,9 @@ const AreaDetailsPage: React.FC = () => {
                              <div className="flex items-center">
                                 <Link to="/" className="text-gray-500 hover:text-gray-700 flex items-center">
                                     <ChevronLeftIcon className="h-5 w-5" />
-                                    <span className="ml-2 font-medium">Dashboard</span>
+                                    <span className="ml-1 font-medium">Dashboard</span>
                                 </Link>
-                                <span className="mx-2 text-gray-300">/</span>
+                                <span className="mx-3 text-gray-300 text-xl">/</span>
                                 <h1 className="text-2xl font-bold text-gray-900">{area.name}</h1>
                             </div>
                             <div className="flex items-center space-x-3">
@@ -615,7 +642,7 @@ const AreaDetailsPage: React.FC = () => {
                                 <Button variant="destructive" onClick={() => setIsDeleteModalOpen(true)}>Delete</Button>
                                 <Button onClick={handleTriggerAnalysis} disabled={analysisInProgress || isTriggering}>
                                     {analysisInProgress || isTriggering ? (
-                                        <><RefreshCwIcon className="h-4 w-4 mr-2 animate-spin" /> Analyzing...</>
+                                        <><Loader2Icon className="h-4 w-4 mr-2 animate-spin" /> Analyzing...</>
                                     ) : (
                                         <><RefreshCwIcon className="h-4 w-4 mr-2" /> Trigger Analysis</>
                                     )}
@@ -646,13 +673,16 @@ const AreaDetailsPage: React.FC = () => {
                         <div className="lg:col-span-2 space-y-8">
                             {analysisInProgress && (
                                  <Card className="text-center">
-                                    <RefreshCwIcon className="h-8 w-8 mx-auto text-blue-500 animate-spin" />
+                                    <Loader2Icon className="h-8 w-8 mx-auto text-blue-500 animate-spin" />
                                     <h3 className="mt-4 text-lg font-semibold">Analysis In Progress...</h3>
                                     <p className="mt-1 text-gray-500">This may take a few minutes. The page will update automatically when complete.</p>
                                 </Card>
                             )}
                             {latestResult && area ? (
-                                <ComparisonViewer result={latestResult} area={area} />
+                                <>
+                                    <ComparisonViewer result={latestResult} area={area} />
+                                    <ReportViewer resultId={latestResult.result_id} areaName={area.name} />
+                                </>
                             ) : !analysisInProgress && (
                                 <Card className="p-10 text-center">
                                     <h3 className="text-lg font-semibold">No analysis results yet</h3>

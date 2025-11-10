@@ -15,73 +15,6 @@ from google.cloud import storage
 logger = logging.getLogger(__name__)
 
 
-def _export_ee_image_to_gcs(
-    image: ee.Image,
-    geometry: ee.Geometry,
-    bucket_name: str,
-    blob_path: str,
-    description: str,
-    file_format: str = 'GeoTIFF',
-    max_wait_seconds: int = 300,
-) -> str:
-    """
-    Export an Earth Engine image to GCS as Cloud-Optimized GeoTIFF.
-    Returns the public HTTPS URL.
-    """
-    # Configure export parameters for COG
-    export_params = {
-        'image': image,
-        'description': description,
-        'bucket': bucket_name,
-        'fileNamePrefix': blob_path.replace('.tif', ''),
-        'region': geometry,
-        'scale': 10,  # 10m resolution for Sentinel-2
-        'crs': 'EPSG:3857',  # Web Mercator for Leaflet compatibility
-        'maxPixels': 1e13,
-        'fileFormat': file_format,
-        'formatOptions': {
-            'cloudOptimized': True,  # Enable COG
-        }
-    }
-    
-    logger.info("Starting EE export: %s to gs://%s/%s", description, bucket_name, blob_path)
-    
-    # Start the export task
-    task = ee.batch.Export.image.toCloudStorage(**export_params)
-    task.start()
-    
-    # Wait for task completion
-    start_time = time.time()
-    while True:
-        status = task.status()
-        state = status['state']
-        
-        if state == 'COMPLETED':
-            logger.info("Export completed: %s", description)
-            break
-        elif state == 'FAILED':
-            error_msg = status.get('error_message', 'Unknown error')
-            raise RuntimeError(f"EE export failed for {description}: {error_msg}")
-        elif state in ['CANCELLED', 'CANCEL_REQUESTED']:
-            raise RuntimeError(f"EE export cancelled for {description}")
-        
-        # Check timeout
-        elapsed = time.time() - start_time
-        if elapsed > max_wait_seconds:
-            task.cancel()
-            raise TimeoutError(f"Export timed out after {max_wait_seconds}s for {description}")
-        
-        # Wait before checking again
-        time.sleep(5)
-    
-    # Construct public URL
-    # EE exports append .tif automatically
-    final_blob_path = blob_path if blob_path.endswith('.tif') else f"{blob_path}.tif"
-    public_url = f"https://storage.googleapis.com/{bucket_name}/{final_blob_path}"
-    
-    return public_url
-
-
 def export_analysis_images_to_gcs(
     images: Dict[str, ee.Image],
     geometry: ee.Geometry,
@@ -121,27 +54,57 @@ def export_analysis_images_to_gcs(
         'difference_image': f"{base_path}/comparisons/{result_id}_diff.tif",
     }
     
-    urls = {}
-    
-    # Export each image
+    # Start all exports in parallel
+    tasks = {}
     for key, blob_path in paths.items():
         image = images[key]
         description = f"{result_id}_{key}"
         
-        try:
-            url = _export_ee_image_to_gcs(
-                image=image,
-                geometry=geometry,
-                bucket_name=bucket_name,
-                blob_path=blob_path,
-                description=description,
-                max_wait_seconds=300,
-            )
-            urls[key] = url
-            logger.info("Successfully exported %s: %s", key, url)
-        except Exception as e:
-            logger.error("Failed to export %s: %s", key, e)
-            raise
+        export_params = {
+            'image': image,
+            'description': description,
+            'bucket': bucket_name,
+            'fileNamePrefix': blob_path.replace('.tif', ''),
+            'region': geometry,
+            'scale': 10,
+            'crs': 'EPSG:3857',
+            'maxPixels': 1e13,
+            'fileFormat': 'GeoTIFF',
+            'formatOptions': {'cloudOptimized': True}
+        }
+        
+        logger.info("Starting EE export: %s to gs://%s/%s", description, bucket_name, blob_path)
+        task = ee.batch.Export.image.toCloudStorage(**export_params)
+        task.start()
+        tasks[key] = {'task': task, 'blob_path': blob_path, 'description': description}
+    
+    # Wait for all tasks to complete
+    import time
+    start_time = time.time()
+    max_wait = 300
+    urls = {}
+    
+    while tasks and (time.time() - start_time) < max_wait:
+        for key in list(tasks.keys()):
+            task_info = tasks[key]
+            status = task_info['task'].status()
+            state = status['state']
+            
+            if state == 'COMPLETED':
+                blob_path = task_info['blob_path']
+                final_blob_path = blob_path if blob_path.endswith('.tif') else f"{blob_path}.tif"
+                urls[key] = f"https://storage.googleapis.com/{bucket_name}/{final_blob_path}"
+                logger.info("Successfully exported %s: %s", key, urls[key])
+                del tasks[key]
+            elif state in ['FAILED', 'CANCELLED', 'CANCEL_REQUESTED']:
+                error_msg = status.get('error_message', 'Unknown error')
+                raise RuntimeError(f"EE export failed for {task_info['description']}: {error_msg}")
+        
+        if tasks:
+            time.sleep(5)
+    
+    if tasks:
+        raise TimeoutError(f"Exports timed out after {max_wait}s. Remaining: {list(tasks.keys())}")
     
     return urls
 

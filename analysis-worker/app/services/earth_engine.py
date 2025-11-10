@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _EE_INITIALIZED = False
 
 # Thresholds for classification
-FOREST_NDVI_THRESHOLD = 0.4  # NDVI > 0.4 indicates vegetation/forest
+FOREST_NDVI_THRESHOLD = 0.35  # NDVI > 0.4 indicates vegetation/forest
 WATER_MNDWI_THRESHOLD = 0.3  # MNDWI > 0.3 indicates water
 
 # Sentinel-2 collection
@@ -261,9 +261,9 @@ def compute_change_products(
     current_class = _create_classification_mask(current_with_indices, classification_type)
     
     # Create combined cloud-free mask (pixels valid in both images)
-    combined_mask = baseline_masked.select('B2').mask().And(current_masked.select('B2').mask())
+    combined_cloud_mask = baseline_masked.select('B2').mask().And(current_masked.select('B2').mask())
     
-    # Calculate valid pixels percentage
+    # Calculate total pixels in area
     total_pixels = ee.Image.constant(1).reduceRegion(
         reducer=ee.Reducer.count(),
         geometry=geometry,
@@ -271,7 +271,8 @@ def compute_change_products(
         maxPixels=1e13
     ).get('constant')
     
-    valid_pixels = combined_mask.reduceRegion(
+    # Calculate cloud-free pixels
+    cloud_free_pixels = combined_cloud_mask.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=geometry,
         scale=scale,
@@ -279,10 +280,26 @@ def compute_change_products(
     ).get('B2')
     
     total_px = ee.Number(total_pixels).getInfo()
-    valid_px = ee.Number(valid_pixels).getInfo()
-    valid_pixels_percentage = (valid_px / total_px) * 100.0 if total_px > 0 else 0.0
+    cloud_free_px = ee.Number(cloud_free_pixels).getInfo()
+    cloud_free_percentage = (cloud_free_px / total_px) * 100.0 if total_px > 0 else 0.0
     
-    logger.info("Valid pixels (cloud-free in both): %.2f%%", valid_pixels_percentage)
+    logger.info("Cloud-free pixels (available for analysis): %.2f%%", cloud_free_percentage)
+    
+    # Create combined mask with classification (cloud-free AND meets classification criteria)
+    combined_mask = combined_cloud_mask.And(baseline_class.mask()).And(current_class.mask())
+    
+    # Calculate pixels that meet classification criteria
+    classified_pixels = combined_mask.reduceRegion(
+        reducer=ee.Reducer.sum(),
+        geometry=geometry,
+        scale=scale,
+        maxPixels=1e13
+    ).get('B2')
+    
+    classified_px = ee.Number(classified_pixels).getInfo()
+    valid_pixels_percentage = (classified_px / total_px) * 100.0 if total_px > 0 else 0.0
+    
+    logger.info("Valid pixels (cloud-free AND classified as %s): %.2f%%", classification_type, valid_pixels_percentage)
     
     # Apply combined mask to classifications
     baseline_class_masked = baseline_class.updateMask(combined_mask)

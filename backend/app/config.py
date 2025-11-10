@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     GCP_PROJECT_ID: str
     ANALYSIS_WORKER_URL: str
+    REPORT_WORKER_URL: str = "http://localhost:8002"
     BACKEND_ENV: str
 
     class Config:

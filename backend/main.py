@@ -6,7 +6,7 @@ It initializes the FastAPI app, includes API routers, and configures middleware.
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from app.routes import health, monitoring_areas, callbacks
+from app.routes import health, monitoring_areas, callbacks, reports
 
 app = FastAPI(
     title="GeoWatch Backend API",
@@ -27,7 +27,8 @@ app.add_middleware(
 # Include API routers
 app.include_router(health.router, prefix="/api", tags=["Health"])
 app.include_router(monitoring_areas.router, prefix="/api", tags=["Monitoring Areas"])
-app.include_router(callbacks.router, prefix="/api", tags=["Callbacks"])
+app.include_router(callbacks.router, prefix="/api/callbacks", tags=["Callbacks"])
+app.include_router(reports.router, prefix="/api", tags=["Reports"])
 
 
 from typing import Optional

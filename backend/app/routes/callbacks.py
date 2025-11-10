@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from pydantic import BaseModel
+import httpx
 
 from app.config import settings
 from app.services.firestore_service import FirestoreService
@@ -92,7 +93,7 @@ async def verify_oidc_token(authorization: str = Header(default=None)):
 
 
 @router.post(
-    "/callbacks/analysis-complete",
+    "/analysis-complete",
     status_code=status.HTTP_200_OK,
     summary="Callback for when analysis is complete",
     dependencies=[Depends(verify_oidc_token)],
@@ -143,6 +144,14 @@ async def analysis_complete_callback(
                 {"status": "active" if payload.status == "completed" else "error"},
             )
         
+        # Trigger report generation for successful analyses
+        if area_id and payload.status == "completed":
+            try:
+                await _trigger_report_generation(db, area_id, payload.result_id)
+            except Exception as report_error:
+                logger.error(f"Failed to trigger report generation: {report_error}")
+                # Don't fail the callback if report generation fails
+        
         logger.info(
             "Analysis result %s updated to %s.",
             payload.result_id,
@@ -159,3 +168,123 @@ async def analysis_complete_callback(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process callback.",
         )
+
+
+class ReportCompletionPayload(BaseModel):
+    """Callback payload from the report worker."""
+    report_id: str
+    area_id: str
+    result_id: str
+    status: str
+    summary: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+@router.post("/report-complete")
+async def report_complete_callback(
+    payload: ReportCompletionPayload,
+    db: FirestoreService = Depends(get_firestore_service),
+):
+    """
+    Callback endpoint for report worker to notify report completion.
+    """
+    try:
+        logger.info(f"Received report completion callback: {payload.report_id} - {payload.status}")
+        
+        # Update analysis result with report info
+        update_data = {
+            "report_id": payload.report_id,
+            "report_status": payload.status,
+            "report_summary": payload.summary
+        }
+        
+        await db.update_analysis_result(payload.result_id, update_data)
+        
+        logger.info(f"Updated result {payload.result_id} with report {payload.report_id}")
+        return {"message": "Report callback processed successfully"}
+        
+    except Exception as e:
+        logger.error(f"Failed to process report callback: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process report callback"
+        )
+
+
+async def _trigger_report_generation(db: FirestoreService, area_id: str, result_id: str):
+    """
+    Trigger report generation by calling the report worker.
+    
+    Args:
+        db: Firestore service instance
+        area_id: Monitoring area ID
+        result_id: Latest analysis result ID
+    """
+    logger.info(f"Triggering report generation for area {area_id}, result {result_id}")
+    
+    # Fetch area details
+    area_data = await db.get_monitoring_area(area_id)
+    if not area_data:
+        logger.error(f"Area {area_id} not found, cannot generate report")
+        return
+    
+    # Fetch latest result
+    latest_result = None
+    results_data = await db.get_analysis_results(area_id, limit=1, offset=0)
+    if results_data:
+        latest_result = results_data[0]
+    
+    if not latest_result or latest_result.get("result_id") != result_id:
+        logger.error(f"Result {result_id} not found, cannot generate report")
+        return
+    
+    # Fetch historical results (last 10)
+    historical_results = await db.get_analysis_results(area_id, limit=10, offset=1)
+    
+    # Prepare request payload
+    payload = {
+        "area": {
+            "area_id": area_data["area_id"],
+            "name": area_data["name"],
+            "type": area_data["type"],
+            "created_at": area_data["created_at"].isoformat() if hasattr(area_data["created_at"], "isoformat") else str(area_data["created_at"]),
+            "total_analyses": area_data.get("total_analyses", 0)
+        },
+        "latest_result": {
+            "result_id": latest_result["result_id"],
+            "timestamp": latest_result["timestamp"].isoformat() if hasattr(latest_result["timestamp"], "isoformat") else str(latest_result["timestamp"]),
+            "processing_status": latest_result["processing_status"],
+            "metrics": latest_result.get("metrics"),
+            "error_message": latest_result.get("error_message")
+        },
+        "historical_results": [
+            {
+                "result_id": r["result_id"],
+                "timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"]),
+                "processing_status": r["processing_status"],
+                "metrics": r.get("metrics"),
+                "error_message": r.get("error_message")
+            }
+            for r in historical_results
+            if r.get("processing_status") == "completed"
+        ]
+    }
+    
+    # Call report worker
+    report_worker_url = getattr(settings, "REPORT_WORKER_URL", "http://localhost:8002")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{report_worker_url}/generate-report",
+                json=payload
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Successfully triggered report generation for area {area_id}")
+            else:
+                logger.warning(f"Report worker returned status {response.status_code}: {response.text}")
+                
+    except Exception as e:
+        logger.error(f"Failed to call report worker: {e}")
+        raise

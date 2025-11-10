@@ -142,18 +142,30 @@ const DashboardPage: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const areasRef = useRef<MonitoringArea[]>([]);
 
-    const fetchAreas = useCallback(async () => {
+    const fetchAreas = useCallback(async (isPolling = false) => {
         try {
-            setLoading(true);
+            // Only show loading spinner on initial load, not during background refresh
+            if (!isPolling) {
+                setLoading(true);
+            }
             setError(null);
+            
             const data = await api.getMonitoringAreas();
-            setAreas(data);
+            
+            // Only update state if data has actually changed
+            if (!isPolling || JSON.stringify(data) !== JSON.stringify(areasRef.current)) {
+                setAreas(data);
+                areasRef.current = data;
+            }
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'Failed to fetch monitoring areas.';
             setError(errorMessage);
         } finally {
-            setLoading(false);
+            if (!isPolling) {
+                setLoading(false);
+            }
         }
     }, []);
 

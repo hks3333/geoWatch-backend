@@ -66,19 +66,11 @@ export interface AnalysisResult {
   current_date?: string | null;
   analysis_type?: string | null;
   
-  // Backward compatibility
+  // Backward compatibility for change percentage
   change_percentage: number | null;
-  generated_map_url?: string | null;
   
   // Error handling
   error_message: string | null;
-  
-  // Legacy fields (for backward compatibility)
-  change_detected?: boolean;
-  change_type?: MonitoringType;
-  baseline_map_url?: string;
-  current_map_url?: string;
-  change_map_url?: string | null;
 }
 
 export interface NewMonitoringArea {

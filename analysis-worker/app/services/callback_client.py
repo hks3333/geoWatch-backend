@@ -4,6 +4,7 @@ to the backend API. It handles authentication by generating OIDC tokens
 for secure service-to-service communication.
 """
 
+import asyncio
 import logging
 
 import httpx

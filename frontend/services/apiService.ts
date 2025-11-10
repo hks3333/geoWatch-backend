@@ -90,26 +90,45 @@ export const getAreaResults = async (
   }
 };
 
-// Get latest analysis result for an area
-export const getLatestAreaResult = async (areaId: string): Promise<AnalysisResult | null> => {
-  try {
-    const response = await api.get<AnalysisResult>(`/monitoring-areas/${areaId}/latest`);
-    return response.data;
-  } catch (error) {
-    // Return null if no results found (404)
-    if (axios.isAxiosError(error) && error.response?.status === 404) {
-      return null;
-    }
-    handleApiError(error);
-  }
-};
-
 // Trigger new analysis for an area
 export const triggerAnalysis = async (areaId: string): Promise<{ message: string }> => {
   try {
     const response = await api.post<{ message: string }>(`/monitoring-areas/${areaId}/analyze`);
     return response.data;
   } catch (error) {
+    handleApiError(error);
+  }
+};
+
+// Get report by ID
+export const getReport = async (reportId: string): Promise<any> => {
+  try {
+    const response = await api.get(`/reports/${reportId}`);
+    return response.data;
+  } catch (error) {
+    handleApiError(error);
+  }
+};
+
+// Get all reports for an area
+export const getAreaReports = async (areaId: string, limit: number = 10): Promise<any[]> => {
+  try {
+    const response = await api.get(`/areas/${areaId}/reports`, { params: { limit } });
+    return response.data;
+  } catch (error) {
+    handleApiError(error);
+  }
+};
+
+// Get report for a specific result
+export const getResultReport = async (resultId: string): Promise<any> => {
+  try {
+    const response = await api.get(`/results/${resultId}/report`);
+    return response.data;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null;
+    }
     handleApiError(error);
   }
 };

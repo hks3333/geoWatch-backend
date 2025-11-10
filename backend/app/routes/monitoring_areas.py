@@ -144,19 +144,29 @@ async def get_all_monitoring_areas(
     try:
         areas_data = await db.get_all_monitoring_areas(user_id="demo_user")
         
-        # Enrich each area with latest analysis info
+        # Batch fetch all latest results for better performance
+        area_ids = [area["area_id"] for area in areas_data]
+        latest_results = {}
+        
+        # Fetch all latest results in parallel
+        import asyncio
+        results = await asyncio.gather(
+            *[db.get_latest_analysis_result(area_id) for area_id in area_ids],
+            return_exceptions=True
+        )
+        
+        # Map results to area_ids
+        for area_id, result in zip(area_ids, results):
+            if not isinstance(result, Exception) and result and result.get("processing_status") == "completed":
+                latest_results[area_id] = result
+        
+        # Enrich areas with latest results
         enriched_areas = []
         for area in areas_data:
-            try:
-                # Get latest completed result
-                latest_result = await db.get_latest_analysis_result(area["area_id"])
-                if latest_result and latest_result.get("processing_status") == "completed":
-                    area["last_checked_at"] = latest_result.get("timestamp")
-                    area["latest_change_percentage"] = latest_result.get("change_percentage")
-            except Exception as e:
-                logger.warning(f"Failed to get latest result for area {area['area_id']}: {e}")
-                # Continue without enrichment
-            
+            area_id = area["area_id"]
+            if area_id in latest_results:
+                area["last_checked_at"] = latest_results[area_id].get("timestamp")
+                area["latest_change_percentage"] = latest_results[area_id].get("change_percentage")
             enriched_areas.append(MonitoringAreaInDB(**area))
         
         return enriched_areas
@@ -253,9 +263,17 @@ async def get_analysis_results_for_area(
         results_data = await db.get_analysis_results(area_id, limit, offset)
         results = [AnalysisResultInDB(**result) for result in results_data]
 
-        analysis_in_progress = False
-        if results and results[0].processing_status == "in_progress":
-            analysis_in_progress = True
+        # Check if any result is still in progress (not completed or failed)
+        analysis_in_progress = any(
+            result.processing_status == "in_progress" 
+            for result in results
+        )
+        
+        logger.info(
+            f"Area {area_id} results: {len(results)} total, "
+            f"latest status: {results[0].processing_status if results else 'none'}, "
+            f"in_progress: {analysis_in_progress}"
+        )
 
         return {"results": results, "analysis_in_progress": analysis_in_progress}
     except Exception as e:
