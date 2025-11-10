@@ -26,8 +26,7 @@ IS_PRODUCTION = settings.BACKEND_ENV == "production"
 if IS_PRODUCTION:
     # Production: Restrict to frontend URL only
     allowed_origins = [
-        "https://geowatch-frontend.run.app",
-        "https://yourdomain.com",  # Update with your custom domain
+        "https://geowatch-30014755997.europe-west1.run.app",
     ]
     logger.info("🚀 Production mode: CORS restricted to %s", allowed_origins)
 else:
