@@ -3,9 +3,11 @@
 # 1. Build Stage
 FROM node:18-alpine AS builder
 WORKDIR /app
-COPY frontend/package.json frontend/package-lock.json ./
+COPY package.json package-lock.json ./
+
 RUN npm install
-COPY frontend/ .
+COPY . .
+
 # This ARG is set by Cloud Run during the build
 ARG VITE_API_BASE_URL
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
