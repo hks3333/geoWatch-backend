@@ -16,5 +16,7 @@ RUN npm run build
 # 2. Serve Stage
 FROM nginx:1.25-alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
-EXPOSE 80
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+ENV PORT=8080
+EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]
