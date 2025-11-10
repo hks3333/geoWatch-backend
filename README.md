@@ -1,119 +1,374 @@
-# GeoWatch Backend Implementation Details
+# GeoWatch - Satellite Monitoring Platform
 
-This document outlines the technical implementations completed for the GeoWatch backend API as per the `GEMINI.md` instructions.
+**Real-time environmental monitoring using satellite imagery and AI-powered analysis**
 
-## 1. Project Setup
+GeoWatch is a cloud-native platform that enables users to monitor environmental changes (forest cover, water bodies) using Sentinel-2 satellite imagery from Google Earth Engine. The system automatically detects changes, generates AI-powered reports, and provides an intuitive web interface for visualization.
 
-### Folder Structure
-The following directory structure has been established:
+---
+
+## 🏗️ Architecture Overview
+
+### System Components
+
+GeoWatch consists of **4 microservices** deployed on **Google Cloud Run**, backed by **Firestore** for data storage and **Cloud Storage** for image assets:
+
 ```
-backend/
-├── main.py
-├── requirements.txt
-├── Dockerfile
-├── .env.example
-├── app/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── monitoring_area.py
-│   │   └── analysis_result.py
-│   ├── routes/
-│   │   ├── __init__.py
-│   │   ├── monitoring_areas.py
-│   │   ├── analysis.py
-│   │   └── health.py
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── firestore_service.py
-│   │   ├── storage_service.py
-│   │   └── worker_client.py
-│   └── utils/
-│       ├── __init__.py
-│       ├── validators.py
-│       └── geometry.py
-└── tests/
-    ├── test_monitoring_areas.py
-    └── test_geometry.py
+┌─────────────────────────────────────────────────────────────────┐
+│                         Frontend (React)                        │
+│                    Cloud Run Service #1                         │
+│  - User interface for creating monitoring areas                 │
+│  - Visualizes analysis results and change detection maps        │
+│  - Displays AI-generated reports                                │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ HTTPS/REST API
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Backend API (FastAPI)                       │
+│                    Cloud Run Service #2                         │
+│  - Manages monitoring areas and analysis results                │
+│  - Orchestrates worker services                                 │
+│  - Handles callbacks from workers                               │
+│  - Serves reports to frontend                                   │
+└──────┬──────────────────────────────────────────┬───────────────┘
+       │                                          │
+       │ Triggers analysis                        │ Triggers report
+       ▼                                          ▼
+┌──────────────────────────┐          ┌──────────────────────────┐
+│  Analysis Worker         │          │  Report Worker           │
+│  Cloud Run Service #3    │          │  Cloud Run Service #4    │
+│                          │          │                          │
+│  - Fetches Sentinel-2    │          │  - Generates reports     │
+│    imagery from GEE      │          │    using Gemini AI       │
+│  - Performs change       │          │  - Summarizes findings   │
+│    detection             │          │  - Provides insights     │
+│  - Exports maps to GCS   │          │  - Sends callback        │
+│  - Sends callback        │          │                          │
+└──────┬───────────────────┘          └──────────┬───────────────┘
+       │                                         │
+       └─────────────┬───────────────────────────┘
+                     ▼
+         ┌───────────────────────┐
+         │   Google Cloud        │
+         │   Infrastructure      │
+         │                       │
+         │  • Firestore          │  ← Data storage
+         │  • Cloud Storage      │  ← Image storage
+         │  • Earth Engine       │  ← Satellite data
+         │  • Gemini AI          │  ← Report generation
+         └───────────────────────┘
 ```
 
-### `requirements.txt`
-The `backend/requirements.txt` file has been created with the following dependencies:
-- `fastapi`
-- `uvicorn`
-- `google-cloud-firestore`
-- `google-cloud-storage`
-- `pydantic`
-- `httpx`
+---
 
-## 2. Configuration
+## 🔧 Google Cloud Products Used
 
-### `.env.example`
-The `backend/.env.example` file has been created to provide a template for environment variables, including:
-- `GOOGLE_APPLICATION_CREDENTIALS=""`
-- `GCP_PROJECT_ID=""`
-- `ANALYSIS_WORKER_URL=""`
+### 1. **Cloud Run** (4 Services)
 
-## 3. Firestore Service
+**Purpose:** Serverless container platform for all microservices
 
-### `backend/app/services/firestore_service.py`
-This file implements the `FirestoreService` class, which encapsulates all interactions with Google Cloud Firestore. Key functionalities include:
--   **Initialization**: Connects to Firestore using `firestore_v1.AsyncClient` and sets up references to `monitoring_areas` and `analysis_results` collections. Includes error handling for connection failures.
--   **Monitoring Area Operations**:
-    -   `add_monitoring_area(area_data)`: Adds a new monitoring area document and returns its ID.
-    -   `get_monitoring_area(area_id)`: Retrieves a single monitoring area by ID.
-    -   `get_all_monitoring_areas()`: Fetches all monitoring areas.
-    -   `update_monitoring_area(area_id, update_data)`: Updates specific fields of a monitoring area.
-    -   `soft_delete_monitoring_area(area_id)`: Sets the status of a monitoring area to "deleted".
--   **Analysis Result Operations**:
-    -   `add_analysis_result(result_data)`: Adds a new analysis result document and returns its ID.
-    -   `get_analysis_results(area_id, limit, offset)`: Retrieves paginated analysis results for a given monitoring area, ordered by timestamp.
--   **Error Handling & Logging**: Comprehensive `try-except` blocks and `logging` are used throughout the service to ensure robustness and traceability.
--   **Asynchronous Operations**: All database operations are implemented using `async/await` for non-blocking I/O, aligning with FastAPI's asynchronous nature.
+| Service | Purpose | Resources | Auto-scaling |
+|---------|---------|-----------|-------------|
+| **Frontend** | React web app served via Nginx | 1 CPU, 1GB RAM | 0-10 instances |
+| **Backend** | FastAPI orchestrator | 2 CPU, 2GB RAM | 1-5 instances |
+| **Analysis Worker** | Earth Engine processing | 4 CPU, 4GB RAM | 1-3 instances |
+| **Report Worker** | Gemini AI report generation | 2 CPU, 2GB RAM | 0-2 instances |
 
-## 4. Pydantic Models
+**Benefits:**
+- Pay-per-use pricing (scales to zero when idle)
+- Automatic HTTPS endpoints
+- Built-in load balancing
+- Zero infrastructure management
 
-### `backend/app/models/monitoring_area.py`
-This file defines the Pydantic models for monitoring areas:
--   **`LatLng`**: Represents a geographical point with `lat` and `lng` (float, with validation for geographical ranges).
--   **`RectangleBounds`**: Defines a rectangular area using `southWest` and `northEast` `LatLng` points.
--   **`MonitoringAreaType`**: A `Literal` type for `"forest"` or `"water"`.
--   **`MonitoringAreaStatus`**: A `Literal` type for `"active"`, `"pending"`, `"paused"`, `"error"`, `"deleted"`.
--   **`MonitoringAreaCreate`**: Used for API request bodies when creating a new monitoring area, including `name`, `type`, and `rectangle_bounds`. Includes string length validation for `name`.
--   **`MonitoringAreaInDB`**: Represents the full monitoring area object as stored in Firestore, extending `MonitoringAreaCreate` with fields like `area_id`, `polygon`, `status`, `created_at`, `last_checked_at`, `baseline_captured`, and `total_analyses`. Default values and `datetime` serialization are configured.
+### 2. **Firestore** (NoSQL Database)
 
-### `backend/app/models/analysis_result.py`
-This file defines the Pydantic models for analysis results:
--   **`AnalysisStatistics`**: Captures statistical data such as `loss_hectares`, `gain_hectares`, and `change_percentage` (float, with `ge=0` for hectares).
--   **`AnalysisImages`**: Stores Cloud Storage URLs for `baseline`, `current`, and `change_mask` images.
--   **`AnalysisProcessingStatus`**: A `Literal` type for `"in_progress"`, `"completed"`, `"failed"`.
--   **`AnalysisResultInDB`**: Represents the complete analysis result object as stored in Firestore, including `result_id`, `area_id`, `timestamp`, `baseline_date`, `current_date`, `change_detected`, `change_type`, `statistics`, `images`, `confidence`, `report_text`, `processing_status`, and `error_message`. Default values and `datetime` serialization are configured.
+**Purpose:** Primary data store for all application data
 
-# Additional Changes based on prompt2.md
+**Collections:**
+- `monitoring_areas` - User-defined regions to monitor
+- `analysis_results` - Change detection results with metrics
+- `analysis_reports` - AI-generated reports
 
-## 1. Temporary User Handling
+**Why Firestore:**
+- Real-time synchronization
+- Automatic scaling
+- Strong consistency
+- Native GCP integration
+- Async Python SDK support
 
-- **`user_id` Field**: Added a `user_id: str` field to the `MonitoringAreaCreate` and `MonitoringAreaInDB` models. For now, this is hardcoded to `"demo_user"` when creating new areas.
-- **Endpoint Filtering**:
-    - `GET /monitoring-areas`: Now filters to only return areas where `user_id == "demo_user"` and `status != "deleted"`.
-    - `GET /monitoring-areas/{area_id}`: Now verifies that the `user_id` of the requested area is `"demo_user"`.
-    - `PATCH /monitoring-areas/{area_id}`: Verifies the `user_id` before allowing updates.
-    - `DELETE /monitoring-areas/{area_id}`: Verifies the `user_id` before soft-deleting the area.
+### 3. **Cloud Storage** (Object Storage)
 
-## 2. New and Refined API Endpoints
+**Purpose:** Store exported satellite imagery and analysis maps
 
-- **`PATCH /monitoring-areas/{area_id}`**: A new endpoint to update the name of a monitoring area. It requires a JSON body with a `"name"` field.
-- **`GET /monitoring-areas/{area_id}/latest`**: A new endpoint to retrieve the single most recent analysis result with a `processing_status` of `"completed"` for a specific area.
+**Bucket:** `geowatch-cloudrun-476105`
 
-## 3. Internal Callback Endpoint
+**Stored Assets:**
+- Baseline satellite images (GeoTIFF)
+- Current satellite images (GeoTIFF)
+- Difference/change masks (GeoTIFF)
+- RGB composites for visualization
 
-- **`POST /callbacks/analysis-complete`**: A new internal endpoint for the Analysis Worker to report the status of an analysis. This endpoint is protected by OIDC token verification.
-- **Callback Logic**: The endpoint receives a payload with the `area_id`, `result_id`, `status`, and either a `payload` (on success) or an `error_message` (on failure). It then updates the corresponding `analysis_results` document in Firestore.
-- **New Route File**: The callback endpoint is implemented in a new file: `backend/app/routes/callbacks.py`.
-- **Firestore Service Update**: A new `update_analysis_result` method was added to `FirestoreService` to handle updates from the callback.
-- **Main App Update**: The new `callbacks` router has been included in the main FastAPI application in `main.py`.
+**Why Cloud Storage:**
+- Cost-effective for large files
+- Direct integration with Earth Engine exports
+- Public URL generation for frontend display
+- Lifecycle management for old data
 
-## Geospatial Data Storage Strategy
+### 4. **Google Earth Engine**
 
-- Monitoring area polygons are stored in Firestore as ordered lists of `LatLng` objects rather than nested coordinate arrays. This structure keeps Firestore writes valid (it avoids disallowed nested arrays) while preserving latitude/longitude semantics for direct ingestion by future Google Earth Engine workers. The worker client serializes these points into `[lng, lat]` pairs when invoking downstream analysis services.
+**Purpose:** Access and process Sentinel-2 satellite imagery
+
+**Capabilities:**
+- Query Sentinel-2 SR Harmonized collection
+- Filter by date, location, and cloud coverage
+- Compute NDVI (vegetation) and MNDWI (water) indices
+- Perform cloud masking
+- Create median composites
+- Export results to Cloud Storage
+
+**Data Source:** `COPERNICUS/S2_SR_HARMONIZED` (10m resolution)
+
+### 5. **Gemini AI (Vertex AI)**
+
+**Purpose:** Generate natural language reports from analysis data
+
+**Model:** `gemini-1.5-flash`
+
+**Capabilities:**
+- Summarize change detection results
+- Identify key findings and trends
+- Provide actionable recommendations
+- Generate markdown-formatted reports
+
+---
+
+## 🔄 Service Communication Flow
+
+### 1. **User Creates Monitoring Area**
+
+```
+Frontend → Backend → Firestore
+                  ↓
+            Analysis Worker (triggered)
+```
+
+1. User draws rectangle on map
+2. Frontend sends `POST /api/monitoring-areas`
+3. Backend validates area (1-500 km²)
+4. Backend stores in Firestore with status `pending`
+5. Backend triggers Analysis Worker via HTTP POST
+
+### 2. **Analysis Worker Processes Imagery**
+
+```
+Analysis Worker → Earth Engine → Cloud Storage → Backend (callback)
+```
+
+1. Worker receives analysis request
+2. Initializes Earth Engine with service account
+3. Fetches Sentinel-2 imagery (baseline + current)
+4. Applies cloud masking
+5. Computes change detection (NDVI/MNDWI)
+6. Exports 4 images to Cloud Storage as GeoTIFFs
+7. Sends callback to Backend with results
+8. Backend updates Firestore with status `completed`
+
+### 3. **Report Worker Generates Insights**
+
+```
+Backend → Report Worker → Gemini AI → Firestore → Backend (callback)
+```
+
+1. Backend triggers Report Worker after analysis completes
+2. Worker fetches analysis data from Firestore
+3. Constructs prompt with metrics and historical context
+4. Calls Gemini AI API for report generation
+5. Parses JSON response (summary, findings, recommendations)
+6. Saves report to Firestore
+7. Sends callback to Backend
+
+### 4. **Frontend Displays Results**
+
+```
+Frontend → Backend → Firestore/Cloud Storage
+```
+
+1. Frontend polls `GET /api/monitoring-areas/{id}`
+2. Backend returns area with latest analysis result
+3. Frontend fetches images from Cloud Storage URLs
+4. Frontend displays change maps and metrics
+5. Frontend fetches report via `GET /api/reports/{id}`
+
+---
+
+## 📊 Data Flow
+
+### Monitoring Area Lifecycle
+
+```
+1. CREATE → status: pending
+   ↓
+2. ANALYSIS TRIGGERED → status: pending
+   ↓
+3. ANALYSIS IN PROGRESS → processing_status: in_progress
+   ↓
+4. ANALYSIS COMPLETE → status: active, processing_status: completed
+   ↓
+5. REPORT GENERATED → report_id attached
+```
+
+### Analysis Result Structure
+
+```json
+{
+  "result_id": "res_abc123",
+  "area_id": "area_xyz789",
+  "processing_status": "completed",
+  "metrics": {
+    "baseline_date": "2024-01",
+    "current_date": "2024-11",
+    "analysis_type": "forest",
+    "loss_hectares": 12.5,
+    "gain_hectares": 3.2,
+    "net_change_percentage": -8.4
+  },
+  "image_urls": {
+    "baseline_image": "gs://bucket/baseline.tif",
+    "current_image": "gs://bucket/current.tif",
+    "difference_image": "gs://bucket/diff.tif",
+    "rgb_composite": "gs://bucket/rgb.tif"
+  },
+  "report_id": "report_def456"
+}
+```
+
+---
+
+## 🚀 Deployment
+
+### Prerequisites
+
+- Google Cloud Project with billing enabled
+- APIs enabled: Cloud Run, Firestore, Cloud Storage, Earth Engine, Vertex AI
+- Service account with roles:
+  - `roles/run.invoker`
+  - `roles/datastore.user`
+  - `roles/storage.objectAdmin`
+  - `roles/earthengine.writer`
+  - `roles/aiplatform.user`
+
+### Deploy Services
+
+**1. Backend**
+```bash
+cd backend
+gcloud run deploy geowatch-backend \
+  --source . \
+  --region europe-west1 \
+  --memory 2Gi --cpu 2 \
+  --min-instances 1 --max-instances 5 \
+  --set-env-vars BACKEND_ENV=production,GCP_PROJECT_ID=your-project
+```
+
+**2. Analysis Worker**
+```bash
+cd analysis-worker
+gcloud run deploy geowatch-analysis-worker \
+  --source . \
+  --region europe-west1 \
+  --memory 4Gi --cpu 4 --timeout 1800 \
+  --min-instances 1 --max-instances 3 \
+  --set-env-vars BACKEND_ENV=production,BACKEND_API_URL=<backend-url>/api
+```
+
+**3. Report Worker**
+```bash
+cd report-worker
+gcloud run deploy geowatch-report-worker \
+  --source . \
+  --region europe-west1 \
+  --memory 2Gi --cpu 2 \
+  --min-instances 0 --max-instances 2 \
+  --set-env-vars BACKEND_ENV=production,BACKEND_API_URL=<backend-url>/api
+```
+
+**4. Frontend**
+```bash
+cd frontend
+gcloud run deploy geowatch-frontend \
+  --source . \
+  --region europe-west1 \
+  --memory 1Gi --cpu 1 \
+  --min-instances 0 --max-instances 10
+```
+
+---
+
+## 🔐 Security
+
+- **CORS:** Backend restricts origins to frontend domain only
+- **Service-to-Service Auth:** Workers use OIDC tokens for callbacks
+- **IAM:** Least-privilege service account per service
+- **Secrets:** Environment variables injected via Cloud Run
+- **Public Access:** Frontend and Backend allow unauthenticated (for demo)
+
+---
+
+## 📈 Monitoring & Costs
+
+### Observability
+
+- **Cloud Logging:** All services log to Cloud Logging
+- **Cloud Monitoring:** CPU, memory, request metrics
+- **Error Reporting:** Automatic error aggregation
+
+### Estimated Monthly Costs (Light Usage)
+
+| Service | Cost |
+|---------|------|
+| Cloud Run (4 services) | $30-50 |
+| Firestore | $5-10 |
+| Cloud Storage | $2-5 |
+| Earth Engine | Free (public data) |
+| Gemini AI | $5-15 |
+| **Total** | **~$50-80/month** |
+
+*Scales with usage. Heavy usage could reach $200-300/month.*
+
+---
+
+## 🛠️ Technology Stack
+
+**Backend:** Python 3.11, FastAPI, Pydantic, httpx  
+**Analysis Worker:** Python 3.10, Earth Engine API, NumPy  
+**Report Worker:** Python 3.11, Gemini AI SDK  
+**Frontend:** React 18, TypeScript, Vite, Leaflet, Axios  
+**Infrastructure:** Docker, Cloud Run, Firestore, Cloud Storage  
+
+---
+
+## 📝 API Endpoints
+
+### Backend API
+
+- `GET /api/health` - Health check
+- `GET /api/monitoring-areas` - List all areas
+- `POST /api/monitoring-areas` - Create new area
+- `GET /api/monitoring-areas/{id}` - Get area details
+- `PATCH /api/monitoring-areas/{id}` - Update area name
+- `DELETE /api/monitoring-areas/{id}` - Soft delete area
+- `GET /api/monitoring-areas/{id}/latest` - Get latest result
+- `POST /api/callbacks/analysis-complete` - Analysis callback
+- `POST /api/callbacks/report-complete` - Report callback
+- `GET /api/reports/{id}` - Get report by ID
+
+---
+
+## 📄 License
+
+MIT License - See LICENSE file for details
+
+---
+
+## 👥 Contributors
+
+Built with ❤️ using Google Cloud Platform

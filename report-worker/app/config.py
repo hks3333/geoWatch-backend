@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     # Backend
     BACKEND_URL: str = "http://localhost:8000"
     
-    # Service
-    PORT: int = 8002
+    # Service defaults (overridden in Cloud Run by env vars)
+    PORT: int = 8080
     
     class Config:
         env_file = ".env"
