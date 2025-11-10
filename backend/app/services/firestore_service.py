@@ -4,9 +4,18 @@ handling all database operations for the GeoWatch application.
 """
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional
 
 from google.cloud import firestore_v1
+from google.cloud.firestore_v1 import FieldFilter
+
+# Suppress AsyncRetry warning from google.api_core
+warnings.filterwarnings(
+    "ignore",
+    message="Using the synchronous google.api_core.retry.Retry with asynchronous calls",
+    category=UserWarning
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -85,9 +94,12 @@ class FirestoreService:
                                   represents a monitoring area.
         """
         areas = []
-        query = self.monitoring_areas_ref.where("user_id", "==", user_id).where(
-            "status", "!=", "deleted"
-        ).order_by("created_at", direction="DESCENDING")
+        query = (
+            self.monitoring_areas_ref
+            .where(filter=FieldFilter("user_id", "==", user_id))
+            .where(filter=FieldFilter("status", "!=", "deleted"))
+            .order_by("created_at", direction="DESCENDING")
+        )
         async for doc in query.stream():
             area_data = doc.to_dict()
             area_data["area_id"] = doc.id
@@ -197,8 +209,9 @@ class FirestoreService:
             Optional[Dict[str, Any]]: The latest completed analysis result, or None if not found.
         """
         query = (
-            self.analysis_results_ref.where("area_id", "==", area_id)
-            .where("processing_status", "==", "completed")
+            self.analysis_results_ref
+            .where(filter=FieldFilter("area_id", "==", area_id))
+            .where(filter=FieldFilter("processing_status", "==", "completed"))
             .order_by("timestamp", direction="DESCENDING")
             .limit(1)
         )

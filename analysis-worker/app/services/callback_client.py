@@ -92,14 +92,16 @@ class CallbackClient:
             backoff = 1.0
             last_exception: Exception | None = None
 
+            logger.info(f"Sending callback to: {callback_url}")
+            
             for attempt in range(1, max_attempts + 1):
                 try:
-                    async with httpx.AsyncClient() as client:
+                    logger.info(f"Callback attempt {attempt}/{max_attempts} to {callback_url}")
+                    async with httpx.AsyncClient(timeout=60.0) as client:
                         response = await client.post(
                             callback_url,
                             json=payload.model_dump(),
                             headers=headers,
-                            timeout=30.0,
                         )
                     response.raise_for_status()
                     logger.info(
@@ -108,20 +110,47 @@ class CallbackClient:
                         attempt,
                         response.status_code,
                     )
-                    break
-                except (httpx.HTTPStatusError, httpx.TransportError) as send_exc:
+                    return  # Success - exit function
+                except httpx.HTTPStatusError as send_exc:
                     last_exception = send_exc
-                    status_text = (
-                        send_exc.response.status_code
-                        if isinstance(send_exc, httpx.HTTPStatusError)
-                        else "transport"
-                    )
                     logger.warning(
-                        "Callback attempt %d/%d failed for result_id %s (status: %s). Retrying in %.1fs...",
+                        "Callback attempt %d/%d failed for result_id %s (HTTP %s). URL: %s. Response: %s. Retrying in %.1fs...",
                         attempt,
                         max_attempts,
                         payload.result_id,
-                        status_text,
+                        send_exc.response.status_code,
+                        callback_url,
+                        send_exc.response.text[:200],
+                        backoff,
+                    )
+                    if attempt < max_attempts:
+                        await asyncio.sleep(backoff)
+                        backoff *= 2
+                except httpx.ConnectError as send_exc:
+                    last_exception = send_exc
+                    error_detail = f"{type(send_exc).__name__}: {str(send_exc)}"
+                    logger.warning(
+                        "Callback attempt %d/%d failed for result_id %s (connection error). URL: %s. Error: %s. Retrying in %.1fs...",
+                        attempt,
+                        max_attempts,
+                        payload.result_id,
+                        callback_url,
+                        error_detail[:200],
+                        backoff,
+                    )
+                    if attempt < max_attempts:
+                        await asyncio.sleep(backoff)
+                        backoff *= 2
+                except httpx.TransportError as send_exc:
+                    last_exception = send_exc
+                    error_detail = f"{type(send_exc).__name__}: {str(send_exc)}"
+                    logger.warning(
+                        "Callback attempt %d/%d failed for result_id %s (transport error). URL: %s. Error: %s. Retrying in %.1fs...",
+                        attempt,
+                        max_attempts,
+                        payload.result_id,
+                        callback_url,
+                        error_detail[:200],
                         backoff,
                     )
                     if attempt < max_attempts:
@@ -130,19 +159,26 @@ class CallbackClient:
                 except Exception as send_exc:
                     last_exception = send_exc
                     logger.error(
-                        "Unexpected error during callback attempt %d/%d for result_id %s: %s",
+                        "Unexpected error during callback attempt %d/%d for result_id %s. URL: %s. Error: %s",
                         attempt,
                         max_attempts,
                         payload.result_id,
-                        send_exc,
+                        callback_url,
+                        str(send_exc)[:200],
                     )
                     if attempt < max_attempts:
                         await asyncio.sleep(backoff)
                         backoff *= 2
-
-            else:
-                # Only executed if loop wasn't broken
-                raise last_exception  # type: ignore[misc]
+            
+            # All attempts failed
+            if last_exception:
+                logger.error(
+                    "All callback attempts failed for result_id %s after %d tries. URL: %s. Last error: %s",
+                    payload.result_id,
+                    max_attempts,
+                    callback_url,
+                    str(last_exception)[:200],
+                )
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Callback failed for result_id: %s. Status: %s, Response: %s",

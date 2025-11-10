@@ -123,25 +123,61 @@ const ReportViewer: React.FC<ReportViewerProps> = ({ resultId, areaName }) => {
     };
 
     const convertMarkdownToHTML = (markdown: string): string => {
-        // Simple markdown to HTML converter
         let html = markdown;
         
-        // Headers
-        html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-        html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-        html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+        // Headers (must be done before paragraphs)
+        html = html.replace(/^### (.*?)$/gm, '<h3 class="text-lg font-semibold mt-4 mb-2">$1</h3>');
+        html = html.replace(/^## (.*?)$/gm, '<h2 class="text-xl font-bold mt-6 mb-3 border-b pb-2">$1</h2>');
+        html = html.replace(/^# (.*?)$/gm, '<h1 class="text-2xl font-bold mt-8 mb-4">$1</h1>');
         
-        // Bold
+        // Bold and italic
+        html = html.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
         html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
         
-        // Lists
-        html = html.replace(/^\* (.*$)/gim, '<li>$1</li>');
-        html = html.replace(/^- (.*$)/gim, '<li>$1</li>');
-        html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+        // Code blocks
+        html = html.replace(/```([\s\S]*?)```/g, '<pre class="bg-gray-100 p-3 rounded my-2 overflow-x-auto"><code>$1</code></pre>');
+        html = html.replace(/`(.*?)`/g, '<code class="bg-gray-100 px-2 py-1 rounded text-sm">$1</code>');
         
-        // Paragraphs
-        html = html.replace(/\n\n/g, '</p><p>');
-        html = '<p>' + html + '</p>';
+        // Lists - handle both - and * prefixes
+        const lines = html.split('\n');
+        let inList = false;
+        let listHtml = '';
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.match(/^[\s]*[-*] /)) {
+                if (!inList) {
+                    listHtml += '<ul class="list-disc list-inside my-2 space-y-1">';
+                    inList = true;
+                }
+                const content = line.replace(/^[\s]*[-*] /, '');
+                listHtml += `<li class="text-gray-700">${content}</li>`;
+            } else {
+                if (inList) {
+                    listHtml += '</ul>';
+                    inList = false;
+                }
+                listHtml += line + '\n';
+            }
+        }
+        if (inList) {
+            listHtml += '</ul>';
+        }
+        html = listHtml;
+        
+        // Line breaks
+        html = html.replace(/\n\n+/g, '</p><p>');
+        html = html.replace(/\n/g, '<br>');
+        
+        // Wrap remaining text in paragraphs
+        const parts = html.split(/<\/?p>/);
+        html = parts.map((part, i) => {
+            if (part.trim() && !part.match(/^<[h|u|p|pre]/)) {
+                return `<p class="text-gray-700 leading-relaxed my-2">${part}</p>`;
+            }
+            return part;
+        }).join('');
         
         return html;
     };
@@ -202,30 +238,34 @@ const ReportViewer: React.FC<ReportViewerProps> = ({ resultId, areaName }) => {
             </div>
 
             {/* Key Findings */}
-            <div className="mb-6">
-                <h4 className="font-semibold text-gray-900 mb-3">Key Findings</h4>
-                <ul className="space-y-2">
-                    {report.key_findings.map((finding, index) => (
-                        <li key={index} className="flex items-start">
-                            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></span>
-                            <span className="text-gray-700">{finding}</span>
-                        </li>
-                    ))}
-                </ul>
-            </div>
+            {report.key_findings && report.key_findings.length > 0 && (
+                <div className="mb-6">
+                    <h4 className="font-semibold text-gray-900 mb-3 text-base">Key Findings</h4>
+                    <div className="space-y-2">
+                        {report.key_findings.map((finding, index) => (
+                            <div key={index} className="flex items-start gap-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                                <span className="inline-block w-1.5 h-1.5 bg-blue-600 rounded-full mt-2 flex-shrink-0"></span>
+                                <span className="text-gray-700 text-sm leading-relaxed">{finding}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Recommendations */}
-            <div className="mb-6">
-                <h4 className="font-semibold text-gray-900 mb-3">Recommendations</h4>
-                <ul className="space-y-2">
-                    {report.recommendations.map((rec, index) => (
-                        <li key={index} className="flex items-start bg-orange-50 p-3 rounded border-l-3 border-orange-400">
-                            <span className="inline-block w-2 h-2 bg-orange-500 rounded-full mt-2 mr-3 flex-shrink-0"></span>
-                            <span className="text-gray-700">{rec}</span>
-                        </li>
-                    ))}
-                </ul>
-            </div>
+            {report.recommendations && report.recommendations.length > 0 && (
+                <div className="mb-6">
+                    <h4 className="font-semibold text-gray-900 mb-3 text-base">Recommendations</h4>
+                    <div className="space-y-2">
+                        {report.recommendations.map((rec, index) => (
+                            <div key={index} className="flex items-start gap-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                                <span className="inline-block w-1.5 h-1.5 bg-amber-600 rounded-full mt-2 flex-shrink-0"></span>
+                                <span className="text-gray-700 text-sm leading-relaxed">{rec}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Full Report Toggle */}
             <div className="border-t pt-4">

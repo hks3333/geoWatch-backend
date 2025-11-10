@@ -65,33 +65,41 @@ def _mask_s2_clouds(image: ee.Image) -> ee.Image:
 def _calculate_cloud_coverage(image: ee.Image, geometry: ee.Geometry) -> float:
     """
     Calculate percentage of cloud coverage in the image.
+    Uses SCL (Scene Classification Layer) band:
+    - 3: Cloud shadow
+    - 8: Cloud medium probability
+    - 9: Cloud high probability
+    - 10: Thin cirrus
     """
     scl = image.select('SCL')
-    bad_pixels = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
+    # Pixels with clouds or cloud shadows - rename to 'clouds' for reduction
+    cloud_pixels = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10)).rename('clouds')
     
-    # Count total pixels
-    total_pixels = ee.Image.constant(1).reduceRegion(
+    # Count total valid pixels (not no-data)
+    total_pixels = image.select('B2').mask().reduceRegion(
         reducer=ee.Reducer.count(),
         geometry=geometry,
         scale=10,
         maxPixels=1e13
-    ).get('constant')
+    ).get('B2')
     
-    # Count bad pixels
-    bad_pixel_count = bad_pixels.reduceRegion(
+    # Count cloud pixels
+    cloud_pixel_count = cloud_pixels.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=geometry,
         scale=10,
         maxPixels=1e13
-    ).get('SCL')
+    ).get('clouds')
     
     total = ee.Number(total_pixels).getInfo()
-    bad = ee.Number(bad_pixel_count).getInfo()
+    clouds = ee.Number(cloud_pixel_count).getInfo() or 0
     
-    if total == 0:
+    if total is None or total == 0:
         return 0.0
     
-    return (bad / total) * 100.0
+    coverage = (clouds / total) * 100.0
+    # Cloud coverage should never exceed 100%
+    return min(coverage, 100.0)
 
 
 def _fetch_sentinel2_image(
@@ -143,23 +151,21 @@ def _fetch_sentinel2_image(
     return image, image_date
 
 
-def fetch_sentinel2_images(
-    polygon: List[List[float]],
-    is_baseline: bool,
+def _fetch_sentinel2_images(
+    polygon: List[List[float]], classification_type: str
 ) -> Tuple[ee.Image, ee.Image, ee.Geometry, str, str]:
     """
     Retrieve baseline and current Sentinel-2 images for the region.
     
-    Strategy:
-    - Current image: Latest available in last 60 days
-    - Baseline image: ~30 days before current image (±10 days window)
+    Strategy for monthly monitoring:
+    - Current image: Latest available in the current month (last 30 days from today)
+    - Baseline image: Latest available in the previous month (30-60 days from today)
     
-    Re-analysis behavior:
-    - If triggered again, will fetch the LATEST image (last 60 days)
-    - If no new Sentinel-2 pass occurred, will get the same image as before
-    - Baseline is always calculated as 30 days before the current image
-    - This means: If same current image, baseline will also be the same
-    - Result: No change detected (which is correct - no new data available)
+    This ensures:
+    - Monthly comparisons are consistent
+    - Each month's latest image is used
+    - Baseline is always from the previous month
+    - Next month, this month's image becomes the baseline
     
     Returns: (baseline_image, current_image, geometry, baseline_date, current_date)
     """
@@ -167,30 +173,29 @@ def fetch_sentinel2_images(
 
     now = datetime.utcnow()
     
-    # Current image: latest available (search last 60 days)
+    # Current image: latest in last 30 days (current month)
     current_end = now
-    current_start = now - timedelta(days=60)
+    current_start = now - timedelta(days=30)
 
     current_image, current_date = _fetch_sentinel2_image(geometry, current_start, current_end)
     if current_image is None:
-        raise RuntimeError("No Sentinel-2 data available for current window")
+        raise RuntimeError("No Sentinel-2 data available for current month (last 30 days)")
 
-    # Baseline image: ~1 month before current (±10 days window)
-    # Note: For both first and subsequent analyses, we use the same logic
-    # This ensures consistent comparison windows
-    baseline_center = datetime.strptime(current_date, '%Y-%m-%d') - timedelta(days=30)
-    
-    baseline_start = baseline_center - timedelta(days=10)
-    baseline_end = baseline_center + timedelta(days=10)
+    # Baseline image: latest in the previous month (30-60 days ago)
+    # This ensures we always compare with the previous month's latest image
+    baseline_end = now - timedelta(days=30)
+    baseline_start = now - timedelta(days=60)
 
     baseline_image, baseline_date = _fetch_sentinel2_image(geometry, baseline_start, baseline_end)
     if baseline_image is None:
-        raise RuntimeError("No Sentinel-2 data available for baseline window")
+        raise RuntimeError("No Sentinel-2 data available for previous month (30-60 days ago)")
 
     logger.info(
-        "Fetched Sentinel-2 images (baseline: %s, current: %s)",
+        "Fetched Sentinel-2 images (baseline: %s [%s], current: %s [%s])",
         baseline_date,
+        baseline_start.strftime('%Y-%m-%d'),
         current_date,
+        current_start.strftime('%Y-%m-%d'),
     )
 
     return baseline_image, current_image, geometry, baseline_date, current_date
@@ -263,15 +268,15 @@ def compute_change_products(
     # Create combined cloud-free mask (pixels valid in both images)
     combined_cloud_mask = baseline_masked.select('B2').mask().And(current_masked.select('B2').mask())
     
-    # Calculate total pixels in area
-    total_pixels = ee.Image.constant(1).reduceRegion(
+    # Calculate total pixels in area (reference: all pixels in geometry)
+    total_pixels = baseline_masked.select('B2').reduceRegion(
         reducer=ee.Reducer.count(),
         geometry=geometry,
         scale=scale,
         maxPixels=1e13
-    ).get('constant')
+    ).get('B2')
     
-    # Calculate cloud-free pixels
+    # Calculate cloud-free pixels (pixels valid in both baseline and current)
     cloud_free_pixels = combined_cloud_mask.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=geometry,
@@ -279,11 +284,13 @@ def compute_change_products(
         maxPixels=1e13
     ).get('B2')
     
-    total_px = ee.Number(total_pixels).getInfo()
-    cloud_free_px = ee.Number(cloud_free_pixels).getInfo()
-    cloud_free_percentage = (cloud_free_px / total_px) * 100.0 if total_px > 0 else 0.0
+    total_px = ee.Number(total_pixels).getInfo() or 0
+    cloud_free_px = ee.Number(cloud_free_pixels).getInfo() or 0
     
-    logger.info("Cloud-free pixels (available for analysis): %.2f%%", cloud_free_percentage)
+    # Cloud-free percentage should never exceed 100%
+    cloud_free_percentage = min((cloud_free_px / total_px) * 100.0 if total_px > 0 else 0.0, 100.0)
+    
+    logger.info("Cloud-free pixels (available for analysis): %.2f%% (%d/%d pixels)", cloud_free_percentage, int(cloud_free_px), int(total_px))
     
     # Create combined mask with classification (cloud-free AND meets classification criteria)
     combined_mask = combined_cloud_mask.And(baseline_class.mask()).And(current_class.mask())
@@ -306,9 +313,14 @@ def compute_change_products(
     current_class_masked = current_class.updateMask(combined_mask)
     
     # Compute change: loss, gain, stable
+    # Loss: was classified in baseline, not in current (1 -> 0)
     loss = baseline_class_masked.eq(1).And(current_class_masked.eq(0)).rename('loss')
+    # Gain: not classified in baseline, is classified in current (0 -> 1)
     gain = baseline_class_masked.eq(0).And(current_class_masked.eq(1)).rename('gain')
+    # Stable: classified in both baseline and current (1 -> 1)
     stable = baseline_class_masked.eq(1).And(current_class_masked.eq(1)).rename('stable')
+    
+    logger.debug("Change detection masks created: loss, gain, stable")
     
     # Calculate areas
     pixel_area_ha = ee.Image.pixelArea().divide(10000).rename('hectares')

@@ -67,16 +67,21 @@ def get_firestore_service() -> FirestoreService:
 async def verify_oidc_token(authorization: str = Header(default=None)):
     """
     Verifies the OIDC token from the Authorization header.
-    In a real application, this would involve a library like google-auth
-    to verify the token against Google's public keys.
-    For this MVP, we will just check if the header is present.
+    In local mode, this is a no-op for testing.
+    In production, this would verify the token against Google's public keys.
     """
-    if settings.BACKEND_ENV != "local":
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or missing Authorization header",
-            )
+    if settings.BACKEND_ENV == "local":
+        logger.debug("Skipping OIDC verification in local mode")
+        return True
+    
+    # Production mode: require valid Authorization header
+    if not authorization or not authorization.startswith("Bearer "):
+        logger.error("Missing or invalid Authorization header in production mode")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing Authorization header",
+        )
+    
     # In a real app, you would verify the token here.
     # For example:
     # from google.oauth2 import id_token
@@ -90,6 +95,8 @@ async def verify_oidc_token(authorization: str = Header(default=None)):
     #         status_code=status.HTTP_401_UNAUTHORIZED,
     #         detail="Invalid OIDC token",
     #     )
+    
+    return True
 
 
 @router.post(
@@ -106,6 +113,8 @@ async def analysis_complete_callback(
     Internal endpoint for the Analysis Worker to report its status.
     This is protected by Google Cloud's service-to-service authentication.
     """
+    logger.info(f"Received analysis callback for result_id: {payload.result_id}, status: {payload.status}")
+    
     try:
         update_data = {
             "processing_status": payload.status,

@@ -216,39 +216,60 @@ Respond ONLY with valid JSON matching the format above. Do not include any text 
     def _parse_report(self, response_text: str) -> Dict[str, Any]:
         """Parse Gemini response into structured format."""
         try:
-            # Try to extract JSON from response
-            # Gemini might wrap it in markdown code blocks
             text = response_text.strip()
             
             # Remove markdown code blocks if present
             if text.startswith("```json"):
                 text = text[7:]
-            if text.startswith("```"):
+            elif text.startswith("```"):
                 text = text[3:]
+            
             if text.endswith("```"):
                 text = text[:-3]
             
             text = text.strip()
             
-            # Parse JSON
-            parsed = json.loads(text)
+            # Try to find JSON object if wrapped in text
+            if not text.startswith("{"):
+                # Look for JSON object in the text
+                start_idx = text.find("{")
+                end_idx = text.rfind("}") + 1
+                if start_idx != -1 and end_idx > start_idx:
+                    text = text[start_idx:end_idx]
+            
+            # Use json.JSONDecoder with strict=False to handle some formatting issues
+            # But first, try direct parsing
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                # If that fails, try replacing literal newlines with escaped newlines
+                # This handles cases where Gemini puts actual newlines in string values
+                text_fixed = text.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                parsed = json.loads(text_fixed)
             
             # Validate required fields
             required = ["summary", "key_findings", "recommendations", "report_markdown"]
             for field in required:
                 if field not in parsed:
-                    raise ValueError(f"Missing required field: {field}")
+                    logger.warning(f"Missing field in response: {field}")
+                    if field == "key_findings":
+                        parsed[field] = []
+                    elif field == "recommendations":
+                        parsed[field] = []
+                    elif field == "summary":
+                        parsed[field] = "Report generated"
+                    elif field == "report_markdown":
+                        parsed[field] = ""
+            
+            # Ensure fields are correct types
+            if not isinstance(parsed.get("key_findings"), list):
+                parsed["key_findings"] = [str(parsed.get("key_findings", ""))]
+            if not isinstance(parsed.get("recommendations"), list):
+                parsed["recommendations"] = [str(parsed.get("recommendations", ""))]
             
             return parsed
             
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse Gemini response as JSON: {e}")
             logger.error(f"Response text: {response_text[:500]}")
-            
-            # Fallback: use raw response
-            return {
-                "summary": "Report generated successfully",
-                "key_findings": ["See full report for details"],
-                "recommendations": ["Review the detailed analysis"],
-                "report_markdown": response_text
-            }
+            raise ValueError(f"Could not parse report response: {e}")

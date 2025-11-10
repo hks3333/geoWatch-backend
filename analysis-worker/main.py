@@ -14,7 +14,7 @@ from app.models import AnalysisPayload, AnalysisMetrics, CallbackPayload, ImageU
 from app.services.callback_client import callback_client
 from app.services.earth_engine import (
     compute_change_products,
-    fetch_sentinel2_images,
+    _fetch_sentinel2_images,
     initialize_earth_engine,
 )
 from app.services.storage import export_analysis_images_to_gcs
@@ -69,9 +69,9 @@ def run_the_full_analysis(payload: AnalysisPayload):
         logger.info(f"Step 2/5: Fetching Sentinel-2 imagery for {payload.result_id}")
         polygon_lnglat = _polygon_to_lnglat(payload.polygon)
         
-        baseline_image, current_image, geometry, baseline_date, current_date = fetch_sentinel2_images(
+        baseline_image, current_image, geometry, baseline_date, current_date = _fetch_sentinel2_images(
             polygon_lnglat,
-            payload.is_baseline,
+            payload.type,
         )
         
         logger.info(

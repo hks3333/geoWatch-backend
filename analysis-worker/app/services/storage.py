@@ -81,7 +81,7 @@ def export_analysis_images_to_gcs(
     # Wait for all tasks to complete
     import time
     start_time = time.time()
-    max_wait = 300
+    max_wait = 500
     urls = {}
     
     while tasks and (time.time() - start_time) < max_wait:
