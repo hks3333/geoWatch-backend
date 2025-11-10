@@ -102,18 +102,20 @@ def _calculate_cloud_coverage(image: ee.Image, geometry: ee.Geometry) -> float:
     return min(coverage, 100.0)
 
 
-def _fetch_sentinel2_image(
+def _create_monthly_composite(
     geometry: ee.Geometry, start: datetime, end: datetime
 ) -> Tuple[Optional[ee.Image], Optional[str]]:
     """
-    Fetch the best Sentinel-2 image for the supplied window.
-    Returns (image, date_string) or (None, None) if no image found.
+    Create a median composite from all Sentinel-2 images in a date range.
+    This is more robust than selecting a single image, as it reduces noise and clouds.
+    
+    Returns: (composite_image, period_string) or (None, None) if no images found.
     """
     collection = (
         ee.ImageCollection(S2_COLLECTION)
         .filterBounds(geometry)
         .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        .sort('CLOUDY_PIXEL_PERCENTAGE')
+        .map(_mask_s2_clouds)  # Apply cloud masking to each image
     )
 
     try:
@@ -131,71 +133,88 @@ def _fetch_sentinel2_image(
         return None, None
 
     logger.info(
-        "Found %d Sentinel-2 images in range %s to %s; selecting least cloudy",
+        "Found %d Sentinel-2 images in range %s to %s; creating median composite",
         count,
         start.date(),
         end.date(),
     )
 
-    # Get the least cloudy image
-    image = collection.first()
+    # Create a median composite from all cloud-masked images
+    # This is much more robust than selecting a single image
+    composite = collection.median()
     
-    # Get the date of this image
-    date_millis = ee.Number(image.get('system:time_start')).getInfo()
-    image_date = datetime.fromtimestamp(date_millis / 1000).strftime('%Y-%m-%d')
+    # Select only the bands we need: B2, B3, B4, B8, B11
+    # (SCL is not needed after cloud masking)
+    # B2=Blue, B3=Green, B4=Red, B8=NIR, B11=SWIR
+    composite = composite.select(['B2', 'B3', 'B4', 'B8', 'B11']).clip(geometry)
     
-    # Select only the bands we need: B2, B3, B4, B8, B11, SCL
-    # B2=Blue, B3=Green, B4=Red, B8=NIR, B11=SWIR, SCL=Scene Classification
-    image = image.select(['B2', 'B3', 'B4', 'B8', 'B11', 'SCL']).clip(geometry)
+    # Use the end date as the composite date
+    period_string = end.strftime('%Y-%m-%d')
 
-    return image, image_date
+    return composite, period_string
 
 
 def _fetch_sentinel2_images(
     polygon: List[List[float]], classification_type: str
 ) -> Tuple[ee.Image, ee.Image, ee.Geometry, str, str]:
     """
-    Retrieve baseline and current Sentinel-2 images for the region.
+    Retrieve baseline and current Sentinel-2 monthly composites for the region.
     
-    Strategy for monthly monitoring:
-    - Current image: Latest available in the current month (last 30 days from today)
-    - Baseline image: Latest available in the previous month (30-60 days from today)
+    Strategy for robust monthly monitoring:
+    - Current Period: The entire previous full month (e.g., October 1-31)
+    - Baseline Period: The entire month before that (e.g., September 1-30)
+    - For each period: Create a median composite from ALL cloud-masked images
     
-    This ensures:
-    - Monthly comparisons are consistent
-    - Each month's latest image is used
-    - Baseline is always from the previous month
-    - Next month, this month's image becomes the baseline
+    This approach is much more robust than single-image selection because:
+    - Median composites reduce noise and weather artifacts
+    - Comparing whole months to whole months is apples-to-apples
+    - You detect real land change, not daily weather variations
     
-    Returns: (baseline_image, current_image, geometry, baseline_date, current_date)
+    Returns: (baseline_composite, current_composite, geometry, baseline_period, current_period)
     """
     geometry = _build_geometry(polygon)
 
     now = datetime.utcnow()
     
-    # Current image: latest in last 30 days (current month)
-    current_end = now
-    current_start = now - timedelta(days=30)
-
-    current_image, current_date = _fetch_sentinel2_image(geometry, current_start, current_end)
+    # Determine the previous full month
+    # If today is Nov 10, we want Oct 1-31 as current, Sep 1-30 as baseline
+    first_of_this_month = now.replace(day=1)
+    last_of_prev_month = first_of_this_month - timedelta(days=1)
+    first_of_prev_month = last_of_prev_month.replace(day=1)
+    
+    first_of_baseline_month = (first_of_prev_month - timedelta(days=1)).replace(day=1)
+    last_of_baseline_month = first_of_prev_month - timedelta(days=1)
+    
+    # Current period: entire previous month
+    current_start = first_of_prev_month
+    current_end = last_of_prev_month
+    
+    # Baseline period: entire month before that
+    baseline_start = first_of_baseline_month
+    baseline_end = last_of_baseline_month
+    
+    logger.info(
+        "Creating monthly composites - Baseline: %s to %s, Current: %s to %s",
+        baseline_start.strftime('%Y-%m-%d'),
+        baseline_end.strftime('%Y-%m-%d'),
+        current_start.strftime('%Y-%m-%d'),
+        current_end.strftime('%Y-%m-%d'),
+    )
+    
+    # Create current month composite
+    current_image, current_date = _create_monthly_composite(geometry, current_start, current_end)
     if current_image is None:
-        raise RuntimeError("No Sentinel-2 data available for current month (last 30 days)")
+        raise RuntimeError(f"No Sentinel-2 data available for current period ({current_start.strftime('%Y-%m-%d')} to {current_end.strftime('%Y-%m-%d')})")
 
-    # Baseline image: latest in the previous month (30-60 days ago)
-    # This ensures we always compare with the previous month's latest image
-    baseline_end = now - timedelta(days=30)
-    baseline_start = now - timedelta(days=60)
-
-    baseline_image, baseline_date = _fetch_sentinel2_image(geometry, baseline_start, baseline_end)
+    # Create baseline month composite
+    baseline_image, baseline_date = _create_monthly_composite(geometry, baseline_start, baseline_end)
     if baseline_image is None:
-        raise RuntimeError("No Sentinel-2 data available for previous month (30-60 days ago)")
+        raise RuntimeError(f"No Sentinel-2 data available for baseline period ({baseline_start.strftime('%Y-%m-%d')} to {baseline_end.strftime('%Y-%m-%d')})")
 
     logger.info(
-        "Fetched Sentinel-2 images (baseline: %s [%s], current: %s [%s])",
+        "Created monthly composites (baseline: %s, current: %s)",
         baseline_date,
-        baseline_start.strftime('%Y-%m-%d'),
         current_date,
-        current_start.strftime('%Y-%m-%d'),
     )
 
     return baseline_image, current_image, geometry, baseline_date, current_date
@@ -240,22 +259,23 @@ def compute_change_products(
     scale: int = 10,
 ) -> Dict:
     """
-    Compute change detection with cloud masking.
+    Compute change detection from monthly composites.
+    Note: Images are already cloud-masked and composited, so no additional masking needed.
     Returns dict with metrics and image objects for export.
     """
-    # Calculate cloud coverage before masking
-    baseline_cloud_coverage = _calculate_cloud_coverage(baseline_image, geometry)
-    current_cloud_coverage = _calculate_cloud_coverage(current_image, geometry)
-    
     logger.info(
-        "Cloud coverage - Baseline: %.2f%%, Current: %.2f%%",
-        baseline_cloud_coverage,
-        current_cloud_coverage
+        "Processing monthly composites (baseline: %s, current: %s)",
+        baseline_date,
+        current_date
     )
     
-    # Apply cloud masking
-    baseline_masked = _mask_s2_clouds(baseline_image)
-    current_masked = _mask_s2_clouds(current_image)
+    # Images are already cloud-masked from the composite creation, so use them directly
+    baseline_masked = baseline_image
+    current_masked = current_image
+    
+    # For composites, cloud coverage is minimal (already masked), but report 0 for clarity
+    baseline_cloud_coverage = 0.0
+    current_cloud_coverage = 0.0
     
     # Add indices (NDVI, MNDWI)
     baseline_with_indices = _add_indices(baseline_masked)

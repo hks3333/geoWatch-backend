@@ -25,21 +25,48 @@ const ReportViewer: React.FC<ReportViewerProps> = ({ resultId, areaName }) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [showFullReport, setShowFullReport] = useState(false);
+    const [isPolling, setIsPolling] = useState(false);
 
     useEffect(() => {
         fetchReport();
     }, [resultId]);
 
-    const fetchReport = async () => {
+    // Poll for report if not available yet
+    useEffect(() => {
+        if (report || error) {
+            // Report is available or error occurred, stop polling
+            setIsPolling(false);
+            return;
+        }
+
+        // Start polling if report not available
+        setIsPolling(true);
+        const pollInterval = setInterval(() => {
+            fetchReport(true); // Pass true to indicate this is a polling request
+        }, 5000); // Poll every 5 seconds
+
+        return () => clearInterval(pollInterval);
+    }, [report, error]);
+
+    const fetchReport = async (isPolling = false) => {
         try {
-            setLoading(true);
+            if (!isPolling) {
+                setLoading(true);
+            }
             setError(null);
             const reportData = await api.getResultReport(resultId);
-            setReport(reportData);
+            if (reportData) {
+                setReport(reportData);
+                setIsPolling(false);
+            }
         } catch (err) {
-            setError('Failed to load report');
+            if (!isPolling) {
+                setError('Failed to load report');
+            }
         } finally {
-            setLoading(false);
+            if (!isPolling) {
+                setLoading(false);
+            }
         }
     };
 

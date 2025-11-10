@@ -214,7 +214,7 @@ Respond ONLY with valid JSON matching the format above. Do not include any text 
         return prompt
     
     def _parse_report(self, response_text: str) -> Dict[str, Any]:
-        """Parse Gemini response into structured format."""
+        """Parse Gemini response into structured format with robust error handling."""
         try:
             text = response_text.strip()
             
@@ -237,15 +237,50 @@ Respond ONLY with valid JSON matching the format above. Do not include any text 
                 if start_idx != -1 and end_idx > start_idx:
                     text = text[start_idx:end_idx]
             
-            # Use json.JSONDecoder with strict=False to handle some formatting issues
-            # But first, try direct parsing
+            # Try parsing with increasing levels of robustness
+            parsed = None
+            
+            # Attempt 1: Direct parsing
             try:
                 parsed = json.loads(text)
-            except json.JSONDecodeError:
-                # If that fails, try replacing literal newlines with escaped newlines
-                # This handles cases where Gemini puts actual newlines in string values
-                text_fixed = text.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                parsed = json.loads(text_fixed)
+            except json.JSONDecodeError as e1:
+                logger.debug(f"Direct JSON parsing failed: {e1}")
+                
+                # Attempt 2: Replace unescaped newlines/tabs/carriage returns
+                try:
+                    # This is tricky: we need to escape newlines that are inside strings
+                    # but NOT the structural newlines between JSON elements
+                    # Use a simple approach: replace all literal control chars
+                    text_fixed = text.replace('\r', '\\r').replace('\t', '\\t')
+                    # For newlines, be more careful - only replace those inside strings
+                    # by using a regex to find and replace within quoted strings
+                    import re
+                    def escape_newlines_in_strings(s):
+                        # Find all quoted strings and escape newlines within them
+                        def replace_in_string(match):
+                            string_content = match.group(0)
+                            # Replace unescaped newlines with escaped ones
+                            return string_content.replace('\n', '\\n')
+                        # Match quoted strings (handles escaped quotes)
+                        return re.sub(r'"(?:[^"\\]|\\.)*"', replace_in_string, s)
+                    
+                    text_fixed = escape_newlines_in_strings(text_fixed)
+                    parsed = json.loads(text_fixed)
+                    logger.debug("JSON parsing succeeded after escaping control characters")
+                except json.JSONDecodeError as e2:
+                    logger.debug(f"Escaped JSON parsing failed: {e2}")
+                    
+                    # Attempt 3: Extract and reconstruct JSON manually
+                    try:
+                        # If all else fails, try to extract key fields manually
+                        logger.warning("Attempting manual JSON field extraction")
+                        parsed = self._extract_json_fields_manually(text)
+                    except Exception as e3:
+                        logger.error(f"Manual extraction failed: {e3}")
+                        raise ValueError(f"Could not parse report response: {e1}")
+            
+            if parsed is None:
+                raise ValueError("Failed to parse JSON after all attempts")
             
             # Validate required fields
             required = ["summary", "key_findings", "recommendations", "report_markdown"]
@@ -269,7 +304,48 @@ Respond ONLY with valid JSON matching the format above. Do not include any text 
             
             return parsed
             
-        except json.JSONDecodeError as e:
+        except Exception as e:
             logger.error(f"Failed to parse Gemini response as JSON: {e}")
-            logger.error(f"Response text: {response_text[:500]}")
+            logger.error(f"Response text (first 1000 chars): {response_text[:1000]}")
             raise ValueError(f"Could not parse report response: {e}")
+    
+    def _extract_json_fields_manually(self, text: str) -> Dict[str, Any]:
+        """
+        Last resort: manually extract JSON fields from malformed JSON.
+        This is a fallback when standard JSON parsing fails.
+        """
+        import re
+        result = {
+            "summary": "",
+            "key_findings": [],
+            "recommendations": [],
+            "report_markdown": ""
+        }
+        
+        # Extract summary (first string value after "summary":)
+        summary_match = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+        if summary_match:
+            result["summary"] = summary_match.group(1).replace('\\n', ' ').strip()
+        
+        # Extract key_findings array
+        findings_match = re.search(r'"key_findings"\s*:\s*\[(.*?)\](?=\s*[,}])', text, re.DOTALL)
+        if findings_match:
+            findings_text = findings_match.group(1)
+            # Extract all quoted strings
+            findings = re.findall(r'"((?:[^"\\]|\\.)*)"', findings_text)
+            result["key_findings"] = [f.replace('\\n', ' ').strip() for f in findings if f.strip()]
+        
+        # Extract recommendations array
+        recs_match = re.search(r'"recommendations"\s*:\s*\[(.*?)\](?=\s*[,}])', text, re.DOTALL)
+        if recs_match:
+            recs_text = recs_match.group(1)
+            recs = re.findall(r'"((?:[^"\\]|\\.)*)"', recs_text)
+            result["recommendations"] = [r.replace('\\n', ' ').strip() for r in recs if r.strip()]
+        
+        # Extract report_markdown
+        markdown_match = re.search(r'"report_markdown"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+        if markdown_match:
+            result["report_markdown"] = markdown_match.group(1).replace('\\n', '\n').strip()
+        
+        logger.warning(f"Manually extracted fields - summary: {len(result['summary'])} chars, findings: {len(result['key_findings'])}, recs: {len(result['recommendations'])}")
+        return result

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import timedelta
@@ -15,7 +16,7 @@ from google.cloud import storage
 logger = logging.getLogger(__name__)
 
 
-def export_analysis_images_to_gcs(
+async def export_analysis_images_to_gcs(
     images: Dict[str, ee.Image],
     geometry: ee.Geometry,
     result_id: str,
@@ -79,7 +80,6 @@ def export_analysis_images_to_gcs(
         tasks[key] = {'task': task, 'blob_path': blob_path, 'description': description}
     
     # Wait for all tasks to complete
-    import time
     start_time = time.time()
     max_wait = 500
     urls = {}
@@ -101,7 +101,7 @@ def export_analysis_images_to_gcs(
                 raise RuntimeError(f"EE export failed for {task_info['description']}: {error_msg}")
         
         if tasks:
-            time.sleep(5)
+            await asyncio.sleep(5)
     
     if tasks:
         raise TimeoutError(f"Exports timed out after {max_wait}s. Remaining: {list(tasks.keys())}")

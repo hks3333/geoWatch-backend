@@ -359,10 +359,10 @@ const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea 
         );
     }
 
-    const changePercentage = result.change_percentage ?? 0;
-    const loss = changePercentage < 0 ? Math.abs(changePercentage) : 0;
-    const gain = changePercentage > 0 ? changePercentage : 0;
-    const stable = 100 - loss - gain;
+    // Use detailed metrics if available, otherwise fall back to change_percentage
+    const loss = result.metrics?.loss_percentage ?? 0;
+    const gain = result.metrics?.gain_percentage ?? 0;
+    const stable = result.metrics ? (100 - loss - gain) : (100 - Math.abs(result.change_percentage ?? 0));
 
     const [mapView, setMapView] = useState<{ center: any; zoom: number } | undefined>();
     const bounds = React.useMemo(() => L.latLngBounds(area.polygon), [area.polygon]);
@@ -463,17 +463,53 @@ const ComparisonViewer: React.FC<{ result: AnalysisResult; area: MonitoringArea 
                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
                      <div className="p-4 bg-red-50 rounded-lg">
                          <p className="text-sm text-red-700">Loss</p>
-                         <p className="text-2xl font-bold text-red-600">{loss.toFixed(1)}%</p>
+                         <p className="text-2xl font-bold text-red-600">{loss.toFixed(2)}%</p>
+                         {result.metrics && (
+                             <p className="text-xs text-red-600 mt-2">{result.metrics.loss_hectares.toFixed(2)} ha</p>
+                         )}
                      </div>
                      <div className="p-4 bg-green-50 rounded-lg">
                          <p className="text-sm text-green-700">Gain</p>
-                         <p className="text-2xl font-bold text-green-600">{gain.toFixed(1)}%</p>
+                         <p className="text-2xl font-bold text-green-600">{gain.toFixed(2)}%</p>
+                         {result.metrics && (
+                             <p className="text-xs text-green-600 mt-2">{result.metrics.gain_hectares.toFixed(2)} ha</p>
+                         )}
                      </div>
                       <div className="p-4 bg-gray-100 rounded-lg">
                          <p className="text-sm text-gray-700">Stable</p>
-                         <p className="text-2xl font-bold text-gray-600">{stable.toFixed(1)}%</p>
+                         <p className="text-2xl font-bold text-gray-600">{stable.toFixed(2)}%</p>
+                         {result.metrics && (
+                             <p className="text-xs text-gray-600 mt-2">{result.metrics.stable_hectares.toFixed(2)} ha</p>
+                         )}
                      </div>
                  </div>
+                 
+                 {/* Additional metrics info */}
+                 {result.metrics && (
+                     <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                         <p className="text-sm text-blue-900 font-semibold mb-2">Analysis Details</p>
+                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm text-blue-800">
+                             <div>
+                                 <p className="text-xs text-blue-700">Total Area</p>
+                                 <p className="font-semibold">{result.metrics.total_hectares.toFixed(2)} ha</p>
+                             </div>
+                             <div>
+                                 <p className="text-xs text-blue-700">Valid Pixels</p>
+                                 <p className="font-semibold">{result.metrics.valid_pixels_percentage.toFixed(1)}%</p>
+                             </div>
+                             <div>
+                                 <p className="text-xs text-blue-700">Net Change</p>
+                                 <p className={`font-semibold ${result.metrics.net_change_percentage > 0 ? 'text-green-600' : result.metrics.net_change_percentage < 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                                     {result.metrics.net_change_percentage > 0 ? '+' : ''}{result.metrics.net_change_percentage.toFixed(2)}%
+                                 </p>
+                             </div>
+                             <div>
+                                 <p className="text-xs text-blue-700">Cloud Coverage</p>
+                                 <p className="font-semibold">{Math.max(result.metrics.baseline_cloud_coverage, result.metrics.current_cloud_coverage).toFixed(1)}%</p>
+                             </div>
+                         </div>
+                     </div>
+                 )}
             </div>
         </Card>
     );

@@ -44,7 +44,7 @@ def _polygon_to_lnglat(polygon: List[List[float]]) -> List[List[float]]:
             converted.append(point)
     return converted
 
-def run_the_full_analysis(payload: AnalysisPayload):
+async def run_the_full_analysis(payload: AnalysisPayload):
     """
     The main analysis function, executed in the background.
     Performs Sentinel-2 based change detection with cloud masking.
@@ -111,7 +111,7 @@ def run_the_full_analysis(payload: AnalysisPayload):
         # --------------------------------------------------------------------------
         logger.info(f"Step 4/5: Exporting images to GCS for {payload.result_id}")
         
-        image_urls_dict = export_analysis_images_to_gcs(
+        image_urls_dict = await export_analysis_images_to_gcs(
             images=images_dict,
             geometry=geometry,
             result_id=payload.result_id,
@@ -156,11 +156,7 @@ def run_the_full_analysis(payload: AnalysisPayload):
             final_payload.status,
         )
         try:
-            import asyncio as aio
-            loop = aio.new_event_loop()
-            aio.set_event_loop(loop)
-            loop.run_until_complete(callback_client.send_callback(final_payload))
-            loop.close()
+            await callback_client.send_callback(final_payload)
         except Exception as callback_exc:
             logger.error("Failed to send callback: %s", callback_exc)
 
