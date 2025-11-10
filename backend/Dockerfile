@@ -5,11 +5,11 @@ FROM python:3.11-slim-buster
 WORKDIR /app
 
 # Install production dependencies.
-COPY requirements.txt .
+COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your application code to the container.
-COPY . .
+# Copy the backend application code.
+COPY backend/ .
 
 # Expose the port that the application listens on.
 # Cloud Run will inject the PORT environment variable, so we use that.

@@ -4,14 +4,13 @@ It initializes the FastAPI app, includes API routers, and configures middleware.
 """
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from app.routes import health, monitoring_areas, callbacks, reports
 from app.config import settings
+from app.routes import callbacks, health, monitoring_areas, reports
 
 # Configure logging
 logging.basicConfig(
